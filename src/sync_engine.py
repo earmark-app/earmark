@@ -167,8 +167,13 @@ class SyncEngine:
             ratings_result = self._extract_ratings(user, all_hc_user_books)
             # Feature 2b: Sync ratings to ABS tags if enabled
             await self._sync_ratings_to_abs_tags(user, abs_client)
-            # Feature 3: Reading dates sync
-            dates_result = self._sync_reading_dates(user, all_hc_user_books, me_data)
+            # Feature 3: Reading dates sync (uses separate HC query with graceful fallback)
+            hc_date_data = []
+            try:
+                hc_date_data = await hc_client.get_user_books_with_dates()
+            except Exception:
+                logger.debug("Could not fetch HC dates, skipping date sync")
+            dates_result = self._sync_reading_dates(user, all_hc_user_books, me_data, hc_date_data)
 
             return {
                 "status": "ok",
@@ -622,9 +627,18 @@ class SyncEngine:
         user: dict,
         hc_user_books: list[HardcoverUserBook],
         me_data: dict | None,
+        hc_date_data: list[dict] | None = None,
     ) -> dict:
         """Extract and merge reading dates from both platforms."""
         results = {"synced": 0}
+
+        # Build HC date lookup: book_id -> {started_at, finished_at}
+        hc_dates_map: dict[int, dict] = {}
+        for entry in (hc_date_data or []):
+            book_info = entry.get("book", {})
+            book_id = book_info.get("id") if isinstance(book_info, dict) else None
+            if book_id:
+                hc_dates_map[book_id] = entry
 
         # Build ABS progress lookup: item_id -> progress dict
         abs_progress_map: dict[str, dict] = {}
@@ -642,9 +656,10 @@ class SyncEngine:
             abs_item_id = mapping["abs_library_item_id"]
             abs_prog = abs_progress_map.get(abs_item_id, {})
 
-            # HC dates
-            hc_started = ub.started_at
-            hc_finished = ub.finished_at
+            # HC dates (from separate query)
+            hc_entry = hc_dates_map.get(ub.book.id, {})
+            hc_started = hc_entry.get("started_at")
+            hc_finished = hc_entry.get("finished_at")
 
             # ABS dates (unix timestamps → ISO strings)
             abs_started_ts = abs_prog.get("startedAt")

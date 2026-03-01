@@ -601,10 +601,12 @@ class TestReadingDatesSync:
 
         ub = HardcoverUserBook(
             id=1, status_id=3,
-            started_at="2024-01-15T00:00:00Z",
-            finished_at="2024-03-20T00:00:00Z",
             book=HardcoverBook(id=60, title="Dated Book"),
         )
+        # HC dates come from separate query (get_user_books_with_dates)
+        hc_date_data = [
+            {"book": {"id": 60}, "started_at": "2024-01-15T00:00:00Z", "finished_at": "2024-03-20T00:00:00Z"},
+        ]
         # ABS started earlier
         me_data = {
             "mediaProgress": [{
@@ -614,7 +616,7 @@ class TestReadingDatesSync:
                 "progress": 1.0, "isFinished": True,
             }],
         }
-        result = engine._sync_reading_dates(user, [ub], me_data)
+        result = engine._sync_reading_dates(user, [ub], me_data, hc_date_data)
         assert result["synced"] == 1
         dates = db.get_reading_dates(user["id"], 60)
         assert dates is not None

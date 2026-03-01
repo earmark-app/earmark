@@ -182,7 +182,7 @@ class HardcoverClient:
         query = (
             "{ me { user_books"
             + (f"(where: {{status_id: {{_eq: {status_id}}}}}) " if status_id is not None else " ")
-            + "{ id status_id rating started_at finished_at book { id title slug cached_contributors"
+            + "{ id status_id rating book { id title slug cached_contributors"
             + " editions { id isbn_13 isbn_10 asin } } } } }"
         )
         data = await self._request(query)
@@ -271,6 +271,24 @@ class HardcoverClient:
         )
         data = await self._request(mutation)
         return data.get("update_user_book", {})
+
+    async def get_user_books_with_dates(self) -> list[dict[str, Any]]:
+        """Try to fetch user_books with started_at/finished_at. Returns raw dicts.
+
+        Falls back gracefully if HC doesn't expose date fields.
+        """
+        query = (
+            "{ me { user_books "
+            "{ id status_id started_at finished_at book { id } } } }"
+        )
+        try:
+            data = await self._request(query)
+            me_list = data.get("me") or []
+            me = me_list[0] if isinstance(me_list, list) and me_list else me_list
+            return (me or {}).get("user_books", [])
+        except HardcoverError:
+            logger.debug("HC does not support started_at/finished_at on user_books")
+            return []
 
     async def update_user_book_rating(self, book_id: int, rating: float) -> dict[str, Any]:
         """Update the rating on an existing user_book."""
