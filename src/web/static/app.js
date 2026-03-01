@@ -25,6 +25,7 @@
         removed_from_collection: '\u274c',
         progress_updated: '\ud83d\udcca',
         status_updated: '\ud83d\udcdd',
+        progress_synced_to_abs: '\ud83d\udce4',
         match_found: '\ud83d\udd17',
         match_failed: '\u26a0\ufe0f',
         error: '\ud83d\udea8',
@@ -190,6 +191,7 @@
         '/rules': { title: 'Sync Rules', render: renderRules },
         '/mappings': { title: 'Book Mappings', render: renderMappings },
         '/log': { title: 'Sync Log', render: renderLog },
+        '/stats': { title: 'Stats', render: renderStats },
         '/settings': { title: 'Settings', render: renderSettings },
     };
 
@@ -1188,6 +1190,169 @@
         }
     }
 
+    // ── Stats View ─────────────────────────────────────────────
+
+    async function renderStats(container) {
+        try {
+            await loadUsers();
+            if (usersCache.length === 0) {
+                container.innerHTML = '<div class="animate-fade-in"><p class="text-gray-500 text-sm py-8 text-center">No users configured. Add one first.</p></div>';
+                return;
+            }
+
+            const userId = usersCache[0].id;
+
+            // User selector + placeholder
+            container.innerHTML = `
+                <div class="animate-fade-in space-y-6">
+                    <div class="flex items-center gap-4">
+                        <label class="text-sm text-gray-400">User:</label>
+                        <select id="stats-user-select" class="bg-surface-700 border border-surface-600 rounded-lg px-3 py-1.5 text-sm text-white">
+                            ${usersCache.map(u => `<option value="${u.id}">${escapeHtml(u.name)}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div id="stats-content">${loadingState()}</div>
+                </div>
+            `;
+
+            async function loadStats(uid) {
+                const statsDiv = $('#stats-content');
+                statsDiv.innerHTML = loadingState();
+                try {
+                    const [stats, ratings, sessions] = await Promise.all([
+                        api('GET', `/stats/${uid}`),
+                        api('GET', `/ratings/summary?user_id=${uid}`),
+                        api('GET', `/stats/${uid}/sessions`).catch(() => []),
+                    ]);
+
+                    const statusEntries = Object.entries(stats.hc_status_counts || {});
+                    const totalHcBooks = statusEntries.reduce((s, [, c]) => s + c, 0);
+                    const statusColors = {
+                        'Want to Read': 'bg-blue-500',
+                        'Currently Reading': 'bg-yellow-500',
+                        'Read': 'bg-emerald-500',
+                        'DNF': 'bg-red-500',
+                    };
+
+                    // Ratings distribution chart
+                    const dist = ratings.distribution || {};
+                    const distEntries = Object.entries(dist).sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]));
+                    const maxCount = Math.max(...Object.values(dist), 1);
+
+                    statsDiv.innerHTML = `
+                        <!-- Stats Cards -->
+                        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                            <div class="stat-card">
+                                <p class="text-sm text-gray-400 mb-1">Listening Time</p>
+                                <p class="text-2xl font-bold text-white">${stats.listening_time_hours}h</p>
+                                <p class="text-xs text-gray-500 mt-1">${Math.round(stats.listening_time_hours / 24)} days</p>
+                            </div>
+                            <div class="stat-card">
+                                <p class="text-sm text-gray-400 mb-1">ABS Finished</p>
+                                <p class="text-2xl font-bold text-emerald-400">${stats.abs_books_finished}</p>
+                                <p class="text-xs text-gray-500 mt-1">${stats.abs_books_in_progress} in progress</p>
+                            </div>
+                            <div class="stat-card">
+                                <p class="text-sm text-gray-400 mb-1">Mapped Books</p>
+                                <p class="text-2xl font-bold text-white">${stats.total_mapped_books}</p>
+                                <p class="text-xs text-gray-500 mt-1">HC / ABS pairs</p>
+                            </div>
+                            <div class="stat-card">
+                                <p class="text-sm text-gray-400 mb-1">Avg Rating</p>
+                                <p class="text-2xl font-bold text-yellow-400">${ratings.avg != null ? ratings.avg + ' / 5' : '-'}</p>
+                                <p class="text-xs text-gray-500 mt-1">${ratings.total || 0} rated</p>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                            <!-- HC Status Distribution -->
+                            <div class="card">
+                                <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Hardcover Library</h3>
+                                ${totalHcBooks === 0 ? '<p class="text-gray-500 text-sm">No books on Hardcover yet.</p>' : `
+                                    <div class="space-y-3">
+                                        ${statusEntries.map(([name, count]) => {
+                                            const pct = Math.round((count / totalHcBooks) * 100);
+                                            const color = statusColors[name] || 'bg-gray-500';
+                                            return `
+                                                <div>
+                                                    <div class="flex justify-between text-sm mb-1">
+                                                        <span class="text-gray-300">${escapeHtml(name)}</span>
+                                                        <span class="text-gray-400">${count} (${pct}%)</span>
+                                                    </div>
+                                                    <div class="w-full bg-surface-700 rounded-full h-2.5">
+                                                        <div class="${color} h-2.5 rounded-full transition-all duration-500" style="width: ${pct}%"></div>
+                                                    </div>
+                                                </div>
+                                            `;
+                                        }).join('')}
+                                        <p class="text-xs text-gray-500 mt-2">${totalHcBooks} total books</p>
+                                    </div>
+                                `}
+                            </div>
+
+                            <!-- Ratings Distribution -->
+                            <div class="card">
+                                <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Ratings Distribution</h3>
+                                ${distEntries.length === 0 ? '<p class="text-gray-500 text-sm">No ratings yet.</p>' : `
+                                    <div class="space-y-2">
+                                        ${distEntries.map(([star, count]) => {
+                                            const pct = Math.round((count / maxCount) * 100);
+                                            return `
+                                                <div class="flex items-center gap-3">
+                                                    <span class="text-sm text-yellow-400 w-10 text-right">${star}</span>
+                                                    <div class="flex-1 bg-surface-700 rounded-full h-2">
+                                                        <div class="bg-yellow-500 h-2 rounded-full transition-all duration-500" style="width: ${pct}%"></div>
+                                                    </div>
+                                                    <span class="text-xs text-gray-400 w-6">${count}</span>
+                                                </div>
+                                            `;
+                                        }).join('')}
+                                    </div>
+                                `}
+                            </div>
+                        </div>
+
+                        <!-- Recent Listening Sessions -->
+                        <div class="card">
+                            <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">Recent Listening Sessions</h3>
+                            ${!sessions || sessions.length === 0 ? '<p class="text-gray-500 text-sm">No listening sessions found.</p>' : `
+                                <div class="overflow-x-auto custom-scrollbar">
+                                    <table class="data-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Book</th>
+                                                <th>Duration</th>
+                                                <th>Date</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            ${sessions.slice(0, 20).map(s => {
+                                                const title = s.displayTitle || s.mediaMetadata?.title || 'Unknown';
+                                                const dur = s.timeListening || 0;
+                                                const mins = Math.round(dur / 60);
+                                                const hrs = Math.floor(mins / 60);
+                                                const durStr = hrs > 0 ? hrs + 'h ' + (mins % 60) + 'm' : mins + 'm';
+                                                const date = s.updatedAt ? new Date(s.updatedAt).toLocaleDateString() : '-';
+                                                return '<tr><td class="text-gray-300 max-w-xs truncate">' + escapeHtml(title) + '</td><td class="text-gray-400">' + durStr + '</td><td class="text-gray-500">' + date + '</td></tr>';
+                                            }).join('')}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            `}
+                        </div>
+                    `;
+                } catch (err) {
+                    statsDiv.innerHTML = '<div class="alert alert-error">Failed to load stats: ' + escapeHtml(err.message) + '</div>';
+                }
+            }
+
+            loadStats(userId);
+            $('#stats-user-select').addEventListener('change', (e) => loadStats(e.target.value));
+        } catch (err) {
+            container.innerHTML = '<div class="alert alert-error">Failed to load stats: ' + escapeHtml(err.message) + '</div>';
+        }
+    }
+
     // ── Settings View ──────────────────────────────────────────
 
     async function renderSettings(container) {
@@ -1232,6 +1397,15 @@
                                 <p class="text-xs text-gray-500 mt-1">Minimum confidence score (0-1) for title/author fuzzy matching. Higher = stricter.</p>
                             </div>
 
+                            <!-- Sync Ratings to ABS Tags -->
+                            <div class="flex items-center gap-3">
+                                <input type="checkbox" name="sync_ratings_to_abs_tags" id="settings-ratings-tags" ${settings.sync_ratings_to_abs_tags ? 'checked' : ''}>
+                                <div>
+                                    <label for="settings-ratings-tags" class="text-sm text-gray-300 font-medium">Sync Ratings to ABS Tags</label>
+                                    <p class="text-xs text-gray-500">Write Hardcover ratings as tags (e.g. "rating:4.5") on ABS library items</p>
+                                </div>
+                            </div>
+
                             <div class="pt-2">
                                 <button type="submit" class="btn btn-primary">Save Settings</button>
                             </div>
@@ -1272,6 +1446,7 @@
                     dry_run: form.dry_run.checked,
                     log_retention_days: parseInt(form.log_retention_days.value),
                     fuzzy_threshold: parseFloat(form.fuzzy_threshold.value),
+                    sync_ratings_to_abs_tags: form.sync_ratings_to_abs_tags.checked,
                 };
 
                 const btn = form.querySelector('[type="submit"]');

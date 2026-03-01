@@ -444,3 +444,194 @@ class TestRunAll:
         result = await engine.run_all()
         assert result["status"] == "locked"
         engine.lock.release()
+
+
+class TestHCStatusToABSProgress:
+    """Feature 1: HC Read status → ABS finished."""
+
+    @pytest.fixture
+    def user_with_mapping(self, db):
+        user = db.create_user({
+            "name": "Test User", "hardcover_token": "tok",
+            "abs_url": "http://abs.test", "abs_api_key": "key",
+        })
+        db.create_book_mapping({
+            "user_id": user["id"],
+            "hardcover_book_id": 100,
+            "abs_library_item_id": "li_100",
+            "match_method": "asin",
+            "title": "Test Book",
+        })
+        return user
+
+    @pytest.mark.asyncio
+    async def test_read_status_marks_abs_finished(self, engine, db, user_with_mapping):
+        """HC Read (3) should mark ABS item as finished."""
+        user = user_with_mapping
+        from src.models import HardcoverUserBook, HardcoverBook, HardcoverEdition
+
+        ub = HardcoverUserBook(
+            id=1, status_id=3, book=HardcoverBook(
+                id=100, title="Test Book",
+                editions=[HardcoverEdition(id=1000, asin="A1")],
+            )
+        )
+        abs_client = _mock_abs_client()
+        result = await engine._run_hc_status_to_abs_progress(user, abs_client, [ub])
+        assert result["synced"] == 1
+        abs_client.update_progress.assert_called_once()
+        call_kw = abs_client.update_progress.call_args
+        assert call_kw[1]["is_finished"] is True
+
+    @pytest.mark.asyncio
+    async def test_reading_status_no_change(self, engine, db, user_with_mapping):
+        """HC Currently Reading (2) should not touch ABS progress."""
+        user = user_with_mapping
+        from src.models import HardcoverUserBook, HardcoverBook
+
+        ub = HardcoverUserBook(
+            id=1, status_id=2, book=HardcoverBook(id=100, title="Test Book")
+        )
+        abs_client = _mock_abs_client()
+        result = await engine._run_hc_status_to_abs_progress(user, abs_client, [ub])
+        assert result["synced"] == 0
+        abs_client.update_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_loop_prevention_hc_to_abs(self, engine, db, user_with_mapping):
+        """Should not re-sync if already synced for same HC status."""
+        user = user_with_mapping
+        from src.models import HardcoverUserBook, HardcoverBook, HardcoverEdition
+
+        # Pre-set the loop prevention marker
+        db.upsert_progress_state(
+            user_id=user["id"], abs_library_item_id="li_100",
+            hardcover_book_id=100, progress=1.0, is_finished=True, hc_status_id=3,
+        )
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE progress_state SET last_hc_to_abs_status_id = 3 WHERE user_id = ? AND abs_library_item_id = ?",
+                (user["id"], "li_100"),
+            )
+
+        ub = HardcoverUserBook(
+            id=1, status_id=3, book=HardcoverBook(
+                id=100, title="Test Book",
+                editions=[HardcoverEdition(id=1000, asin="A1")],
+            )
+        )
+        abs_client = _mock_abs_client()
+        result = await engine._run_hc_status_to_abs_progress(user, abs_client, [ub])
+        assert result["skipped"] == 1
+        abs_client.update_progress.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dry_run_no_abs_write(self, dry_engine, db, user_with_mapping):
+        """Dry run should not write to ABS."""
+        user = user_with_mapping
+        from src.models import HardcoverUserBook, HardcoverBook, HardcoverEdition
+
+        ub = HardcoverUserBook(
+            id=1, status_id=3, book=HardcoverBook(
+                id=100, title="Test Book",
+                editions=[HardcoverEdition(id=1000, asin="A1")],
+            )
+        )
+        abs_client = _mock_abs_client()
+        result = await dry_engine._run_hc_status_to_abs_progress(user, abs_client, [ub])
+        assert result["synced"] == 1
+        abs_client.update_progress.assert_not_called()
+
+
+class TestRatingsExtraction:
+    """Feature 2: Ratings extraction from HC."""
+
+    @pytest.mark.asyncio
+    async def test_extracts_ratings(self, engine, db):
+        user = db.create_user({
+            "name": "Test", "hardcover_token": "tok",
+            "abs_url": "http://abs", "abs_api_key": "key",
+        })
+        db.create_book_mapping({
+            "user_id": user["id"], "hardcover_book_id": 50,
+            "abs_library_item_id": "li_50", "match_method": "isbn", "title": "Rated Book",
+        })
+        from src.models import HardcoverUserBook, HardcoverBook
+
+        ub = HardcoverUserBook(
+            id=1, status_id=3, rating=4.5,
+            book=HardcoverBook(id=50, title="Rated Book"),
+        )
+        result = engine._extract_ratings(user, [ub])
+        assert result["extracted"] == 1
+        rating = db.get_book_rating(user["id"], 50)
+        assert rating["rating"] == 4.5
+        assert rating["abs_library_item_id"] == "li_50"
+
+    @pytest.mark.asyncio
+    async def test_skips_no_rating(self, engine, db):
+        user = db.create_user({
+            "name": "Test", "hardcover_token": "tok",
+            "abs_url": "http://abs", "abs_api_key": "key",
+        })
+        from src.models import HardcoverUserBook, HardcoverBook
+
+        ub = HardcoverUserBook(
+            id=1, status_id=2, rating=None,
+            book=HardcoverBook(id=50, title="No Rating"),
+        )
+        result = engine._extract_ratings(user, [ub])
+        assert result["extracted"] == 0
+
+
+class TestReadingDatesSync:
+    """Feature 3: Reading dates merge."""
+
+    @pytest.mark.asyncio
+    async def test_merges_dates(self, engine, db):
+        user = db.create_user({
+            "name": "Test", "hardcover_token": "tok",
+            "abs_url": "http://abs", "abs_api_key": "key",
+        })
+        db.create_book_mapping({
+            "user_id": user["id"], "hardcover_book_id": 60,
+            "abs_library_item_id": "li_60", "match_method": "isbn", "title": "Dated Book",
+        })
+        from src.models import HardcoverUserBook, HardcoverBook
+
+        ub = HardcoverUserBook(
+            id=1, status_id=3,
+            started_at="2024-01-15T00:00:00Z",
+            finished_at="2024-03-20T00:00:00Z",
+            book=HardcoverBook(id=60, title="Dated Book"),
+        )
+        # ABS started earlier
+        me_data = {
+            "mediaProgress": [{
+                "libraryItemId": "li_60",
+                "startedAt": 1704067200000,  # 2024-01-01
+                "finishedAt": 1711324800000,  # 2024-03-25
+                "progress": 1.0, "isFinished": True,
+            }],
+        }
+        result = engine._sync_reading_dates(user, [ub], me_data)
+        assert result["synced"] == 1
+        dates = db.get_reading_dates(user["id"], 60)
+        assert dates is not None
+        assert dates["date_started"] == "2024-01-01"  # ABS earlier
+        assert dates["source_started"] == "audiobookshelf"
+
+    @pytest.mark.asyncio
+    async def test_graceful_missing_dates(self, engine, db):
+        user = db.create_user({
+            "name": "Test", "hardcover_token": "tok",
+            "abs_url": "http://abs", "abs_api_key": "key",
+        })
+        from src.models import HardcoverUserBook, HardcoverBook
+
+        ub = HardcoverUserBook(
+            id=1, status_id=1,
+            book=HardcoverBook(id=70, title="No Dates"),
+        )
+        result = engine._sync_reading_dates(user, [ub], {"mediaProgress": []})
+        assert result["synced"] == 0

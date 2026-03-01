@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -106,6 +106,46 @@ DEFAULT_SETTINGS = {
     "dry_run": "false",
     "log_retention_days": "30",
     "fuzzy_match_threshold": "0.85",
+    "schema_version": "1",
+    "sync_ratings_to_abs_tags": "false",
+}
+
+# ---------------------------------------------------------------------------
+# Migrations (additive only: ADD COLUMN, CREATE TABLE)
+# ---------------------------------------------------------------------------
+
+MIGRATIONS = {
+    2: [
+        "ALTER TABLE progress_state ADD COLUMN last_hc_to_abs_status_id INTEGER",
+        "ALTER TABLE progress_state ADD COLUMN last_hc_to_abs_synced_at TEXT",
+    ],
+    3: [
+        """CREATE TABLE IF NOT EXISTS book_ratings (
+            id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            hardcover_book_id INTEGER NOT NULL,
+            abs_library_item_id TEXT,
+            rating REAL,
+            source TEXT DEFAULT 'hardcover',
+            synced_to_abs INTEGER DEFAULT 0,
+            last_synced_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, hardcover_book_id)
+        )""",
+    ],
+    4: [
+        """CREATE TABLE IF NOT EXISTS reading_dates (
+            id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            hardcover_book_id INTEGER NOT NULL,
+            abs_library_item_id TEXT,
+            date_started TEXT,
+            date_finished TEXT,
+            source_started TEXT,
+            source_finished TEXT,
+            last_synced_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(user_id, hardcover_book_id)
+        )""",
+    ],
 }
 
 
@@ -142,6 +182,32 @@ class Database:
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                     (key, value),
                 )
+        self._apply_migrations()
+
+    def _apply_migrations(self):
+        """Run incremental schema migrations from current version to SCHEMA_VERSION."""
+        current = int(self.get_setting("schema_version") or "1")
+        if current >= SCHEMA_VERSION:
+            return
+        logger.info("Migrating database from v%d to v%d", current, SCHEMA_VERSION)
+        with self.connect() as conn:
+            for version in range(current + 1, SCHEMA_VERSION + 1):
+                stmts = MIGRATIONS.get(version, [])
+                for stmt in stmts:
+                    try:
+                        conn.execute(stmt)
+                    except Exception as e:
+                        # Column/table may already exist from a previous partial migration
+                        if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                            logger.debug("Migration v%d: %s (already applied)", version, e)
+                        else:
+                            raise
+                logger.info("Applied migration v%d (%d statements)", version, len(stmts))
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES ('schema_version', ?, datetime('now')) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (str(SCHEMA_VERSION),),
+            )
 
     # --- Helpers ---
 
@@ -549,3 +615,114 @@ class Database:
     def update_settings(self, settings: dict[str, str]):
         for key, value in settings.items():
             self.update_setting(key, value)
+
+    # --- Book Ratings ---
+
+    def upsert_book_rating(
+        self,
+        user_id: str,
+        hardcover_book_id: int,
+        rating: float,
+        source: str = "hardcover",
+        abs_library_item_id: Optional[str] = None,
+    ) -> dict:
+        rating_id = self._gen_id()
+        now = self._now()
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO book_ratings
+                   (id, user_id, hardcover_book_id, abs_library_item_id, rating, source, last_synced_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, hardcover_book_id) DO UPDATE SET
+                   rating = excluded.rating,
+                   abs_library_item_id = COALESCE(excluded.abs_library_item_id, abs_library_item_id),
+                   source = excluded.source,
+                   last_synced_at = excluded.last_synced_at""",
+                (rating_id, user_id, hardcover_book_id, abs_library_item_id, rating, source, now),
+            )
+        return self.get_book_rating(user_id, hardcover_book_id)
+
+    def get_book_rating(self, user_id: str, hardcover_book_id: int) -> Optional[dict]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM book_ratings WHERE user_id = ? AND hardcover_book_id = ?",
+                (user_id, hardcover_book_id),
+            ).fetchone()
+            return self._row_to_dict(row) if row else None
+
+    def list_book_ratings(self, user_id: Optional[str] = None) -> list[dict]:
+        query = "SELECT * FROM book_ratings WHERE 1=1"
+        params: list[Any] = []
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY last_synced_at DESC"
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [self._row_to_dict(row) for row in rows]
+
+    def mark_rating_synced_to_abs(self, user_id: str, hardcover_book_id: int):
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE book_ratings SET synced_to_abs = 1 WHERE user_id = ? AND hardcover_book_id = ?",
+                (user_id, hardcover_book_id),
+            )
+
+    # --- Reading Dates ---
+
+    def upsert_reading_dates(
+        self,
+        user_id: str,
+        hardcover_book_id: int,
+        abs_library_item_id: Optional[str] = None,
+        date_started: Optional[str] = None,
+        date_finished: Optional[str] = None,
+        source_started: Optional[str] = None,
+        source_finished: Optional[str] = None,
+    ) -> dict:
+        date_id = self._gen_id()
+        now = self._now()
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO reading_dates
+                   (id, user_id, hardcover_book_id, abs_library_item_id,
+                    date_started, date_finished, source_started, source_finished, last_synced_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, hardcover_book_id) DO UPDATE SET
+                   abs_library_item_id = COALESCE(excluded.abs_library_item_id, abs_library_item_id),
+                   date_started = CASE
+                       WHEN excluded.date_started IS NOT NULL AND (date_started IS NULL OR excluded.date_started < date_started)
+                       THEN excluded.date_started ELSE date_started END,
+                   date_finished = CASE
+                       WHEN excluded.date_finished IS NOT NULL AND (date_finished IS NULL OR excluded.date_finished > date_finished)
+                       THEN excluded.date_finished ELSE date_finished END,
+                   source_started = CASE
+                       WHEN excluded.date_started IS NOT NULL AND (date_started IS NULL OR excluded.date_started < date_started)
+                       THEN excluded.source_started ELSE source_started END,
+                   source_finished = CASE
+                       WHEN excluded.date_finished IS NOT NULL AND (date_finished IS NULL OR excluded.date_finished > date_finished)
+                       THEN excluded.source_finished ELSE source_finished END,
+                   last_synced_at = excluded.last_synced_at""",
+                (date_id, user_id, hardcover_book_id, abs_library_item_id,
+                 date_started, date_finished, source_started, source_finished, now),
+            )
+        return self.get_reading_dates(user_id, hardcover_book_id)
+
+    def get_reading_dates(self, user_id: str, hardcover_book_id: int) -> Optional[dict]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM reading_dates WHERE user_id = ? AND hardcover_book_id = ?",
+                (user_id, hardcover_book_id),
+            ).fetchone()
+            return self._row_to_dict(row) if row else None
+
+    def list_reading_dates(self, user_id: Optional[str] = None) -> list[dict]:
+        query = "SELECT * FROM reading_dates WHERE 1=1"
+        params: list[Any] = []
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY last_synced_at DESC"
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [self._row_to_dict(row) for row in rows]

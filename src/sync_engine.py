@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from datetime import datetime, timezone
+
 from src.config import Settings, settings
 from src.db import Database
 from src.matching.book_matcher import BookMatcher
@@ -140,13 +142,41 @@ class SyncEngine:
                 if r["direction"] in ("abs_to_hc", "bidirectional")
             ]
 
+            # Fetch HC user_books once (shared across sync phases)
+            all_hc_user_books = []
+            try:
+                all_hc_user_books = await hc_client.get_user_books()
+            except HardcoverError as e:
+                logger.warning("Failed to fetch all HC user_books: %s", e)
+
+            # Fetch ABS me_data once (shared across sync phases)
+            me_data = None
+            try:
+                me_data = await abs_client.get_me()
+            except ABSError as e:
+                logger.warning("Failed to fetch ABS me data: %s", e)
+
             hc_results = await self._run_hc_to_abs(user, hc_client, abs_client, hc_to_abs_rules)
-            abs_results = await self._run_abs_to_hc(user, hc_client, abs_client, abs_to_hc_rules)
+            abs_results = await self._run_abs_to_hc(user, hc_client, abs_client, abs_to_hc_rules, me_data=me_data)
+
+            # Feature 1: HC status → ABS progress
+            hc_to_abs_progress = await self._run_hc_status_to_abs_progress(
+                user, abs_client, all_hc_user_books
+            )
+            # Feature 2: Ratings extraction
+            ratings_result = self._extract_ratings(user, all_hc_user_books)
+            # Feature 2b: Sync ratings to ABS tags if enabled
+            await self._sync_ratings_to_abs_tags(user, abs_client)
+            # Feature 3: Reading dates sync
+            dates_result = self._sync_reading_dates(user, all_hc_user_books, me_data)
 
             return {
                 "status": "ok",
                 "hc_to_abs": hc_results,
                 "abs_to_hc": abs_results,
+                "hc_to_abs_progress": hc_to_abs_progress,
+                "ratings": ratings_result,
+                "dates": dates_result,
             }
         except HardcoverAuthError as e:
             logger.error("Hardcover auth failed for user %s: %s", user["name"], e)
@@ -351,6 +381,7 @@ class SyncEngine:
         hc_client: HardcoverClient,
         abs_client: AudiobookshelfClient,
         rules: list[dict],
+        me_data: dict | None = None,
     ) -> dict:
         """Phase 2: Sync ABS progress to Hardcover statuses."""
         if not rules:
@@ -359,8 +390,8 @@ class SyncEngine:
         results = {"rules_processed": 0, "status_updates": 0}
 
         try:
-            # Fetch all ABS progress in one call
-            me_data = await abs_client.get_me()
+            if me_data is None:
+                me_data = await abs_client.get_me()
             progress_list = me_data.get("mediaProgress", [])
         except ABSError as e:
             logger.error("Failed to fetch ABS progress for user %s: %s", user["name"], e)
@@ -461,6 +492,208 @@ class SyncEngine:
             results["status_updates"] += 1
 
         results["rules_processed"] = len(rules)
+        return results
+
+    # --- Feature 1: HC Status → ABS Progress ---
+
+    async def _run_hc_status_to_abs_progress(
+        self,
+        user: dict,
+        abs_client: AudiobookshelfClient,
+        hc_user_books: list[HardcoverUserBook],
+    ) -> dict:
+        """When HC status is 'Read', mark the ABS item as finished."""
+        results = {"synced": 0, "skipped": 0}
+        if not hc_user_books:
+            return results
+
+        for ub in hc_user_books:
+            # Only sync "Read" (3) status → ABS finished
+            if ub.status_id != 3:
+                continue
+
+            mapping = self.db.find_mapping_by_hc_book(user["id"], ub.book.id)
+            if not mapping:
+                continue
+
+            abs_item_id = mapping["abs_library_item_id"]
+
+            # Check loop prevention
+            prev = self.db.get_progress_state(user["id"], abs_item_id)
+            if prev and prev.get("last_hc_to_abs_status_id") == 3:
+                results["skipped"] += 1
+                continue
+
+            # Check if ABS already finished — never decrease
+            if prev and prev.get("last_abs_is_finished"):
+                results["skipped"] += 1
+                continue
+
+            if not self.config.dry_run:
+                try:
+                    await abs_client.update_progress(
+                        item_id=abs_item_id,
+                        progress=1.0,
+                        is_finished=True,
+                    )
+                except ABSError as e:
+                    logger.warning("Failed to update ABS progress for %s: %s", abs_item_id, e)
+                    continue
+            else:
+                logger.info("[DRY RUN] Would mark ABS item %s as finished", abs_item_id)
+
+            # Update progress state with loop prevention
+            self.db.upsert_progress_state(
+                user_id=user["id"],
+                abs_library_item_id=abs_item_id,
+                hardcover_book_id=ub.book.id,
+                progress=1.0,
+                is_finished=True,
+                hc_status_id=3,
+            )
+            # Also store the HC→ABS direction marker
+            with self.db.connect() as conn:
+                conn.execute(
+                    """UPDATE progress_state SET last_hc_to_abs_status_id = 3,
+                       last_hc_to_abs_synced_at = datetime('now')
+                       WHERE user_id = ? AND abs_library_item_id = ?""",
+                    (user["id"], abs_item_id),
+                )
+
+            self.db.add_sync_log(
+                action="progress_synced_to_abs", user_id=user["id"],
+                direction="hc_to_abs",
+                details={
+                    "hc_book_id": ub.book.id,
+                    "abs_item_id": abs_item_id,
+                    "title": ub.book.title,
+                    "hc_status": "Read",
+                },
+            )
+            results["synced"] += 1
+
+        return results
+
+    # --- Feature 2: Ratings extraction ---
+
+    def _extract_ratings(self, user: dict, hc_user_books: list[HardcoverUserBook]) -> dict:
+        """Extract ratings from HC user_books and store in DB."""
+        results = {"extracted": 0}
+        for ub in hc_user_books:
+            if ub.rating is None or ub.rating <= 0:
+                continue
+            mapping = self.db.find_mapping_by_hc_book(user["id"], ub.book.id)
+            abs_item_id = mapping["abs_library_item_id"] if mapping else None
+            self.db.upsert_book_rating(
+                user_id=user["id"],
+                hardcover_book_id=ub.book.id,
+                rating=ub.rating,
+                source="hardcover",
+                abs_library_item_id=abs_item_id,
+            )
+            results["extracted"] += 1
+        return results
+
+    async def _sync_ratings_to_abs_tags(self, user: dict, abs_client: AudiobookshelfClient):
+        """If enabled, sync ratings to ABS item tags as 'rating:X.X'."""
+        if self.db.get_setting("sync_ratings_to_abs_tags") != "true":
+            return
+        ratings = self.db.list_book_ratings(user_id=user["id"])
+        for r in ratings:
+            if r.get("synced_to_abs") or not r.get("abs_library_item_id") or not r.get("rating"):
+                continue
+            abs_item_id = r["abs_library_item_id"]
+            rating_tag = f"rating:{r['rating']}"
+            if not self.config.dry_run:
+                try:
+                    existing_tags = await abs_client.get_item_tags(abs_item_id)
+                    # Remove old rating tags and add new one
+                    new_tags = [t for t in existing_tags if not t.startswith("rating:")]
+                    new_tags.append(rating_tag)
+                    await abs_client.update_item_tags(abs_item_id, new_tags)
+                    self.db.mark_rating_synced_to_abs(user["id"], r["hardcover_book_id"])
+                except ABSError as e:
+                    logger.warning("Failed to sync rating tag for %s: %s", abs_item_id, e)
+
+    # --- Feature 3: Reading dates sync ---
+
+    def _sync_reading_dates(
+        self,
+        user: dict,
+        hc_user_books: list[HardcoverUserBook],
+        me_data: dict | None,
+    ) -> dict:
+        """Extract and merge reading dates from both platforms."""
+        results = {"synced": 0}
+
+        # Build ABS progress lookup: item_id -> progress dict
+        abs_progress_map: dict[str, dict] = {}
+        if me_data:
+            for p in me_data.get("mediaProgress", []):
+                item_id = p.get("libraryItemId", "")
+                if item_id:
+                    abs_progress_map[item_id] = p
+
+        for ub in hc_user_books:
+            mapping = self.db.find_mapping_by_hc_book(user["id"], ub.book.id)
+            if not mapping:
+                continue
+
+            abs_item_id = mapping["abs_library_item_id"]
+            abs_prog = abs_progress_map.get(abs_item_id, {})
+
+            # HC dates
+            hc_started = ub.started_at
+            hc_finished = ub.finished_at
+
+            # ABS dates (unix timestamps → ISO strings)
+            abs_started_ts = abs_prog.get("startedAt")
+            abs_finished_ts = abs_prog.get("finishedAt")
+            abs_started = (
+                datetime.fromtimestamp(abs_started_ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+                if abs_started_ts else None
+            )
+            abs_finished = (
+                datetime.fromtimestamp(abs_finished_ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+                if abs_finished_ts else None
+            )
+
+            # Pick dates and sources (earliest start, latest finish)
+            date_started = None
+            source_started = None
+            date_finished = None
+            source_finished = None
+
+            candidates_start = []
+            if hc_started:
+                candidates_start.append((hc_started[:10], "hardcover"))
+            if abs_started:
+                candidates_start.append((abs_started, "audiobookshelf"))
+            if candidates_start:
+                candidates_start.sort(key=lambda x: x[0])
+                date_started, source_started = candidates_start[0]
+
+            candidates_finish = []
+            if hc_finished:
+                candidates_finish.append((hc_finished[:10], "hardcover"))
+            if abs_finished:
+                candidates_finish.append((abs_finished, "audiobookshelf"))
+            if candidates_finish:
+                candidates_finish.sort(key=lambda x: x[0], reverse=True)
+                date_finished, source_finished = candidates_finish[0]
+
+            if date_started or date_finished:
+                self.db.upsert_reading_dates(
+                    user_id=user["id"],
+                    hardcover_book_id=ub.book.id,
+                    abs_library_item_id=abs_item_id,
+                    date_started=date_started,
+                    date_finished=date_finished,
+                    source_started=source_started,
+                    source_finished=source_finished,
+                )
+                results["synced"] += 1
+
         return results
 
     # --- Helpers ---

@@ -182,7 +182,7 @@ class HardcoverClient:
         query = (
             "{ me { user_books"
             + (f"(where: {{status_id: {{_eq: {status_id}}}}}) " if status_id is not None else " ")
-            + "{ id status_id rating book { id title slug cached_contributors"
+            + "{ id status_id rating started_at finished_at book { id title slug cached_contributors"
             + " editions { id isbn_13 isbn_10 asin } } } } }"
         )
         data = await self._request(query)
@@ -272,6 +272,39 @@ class HardcoverClient:
         data = await self._request(mutation)
         return data.get("update_user_book", {})
 
+    async def update_user_book_rating(self, book_id: int, rating: float) -> dict[str, Any]:
+        """Update the rating on an existing user_book."""
+        mutation = (
+            "mutation { update_user_book(where: {book_id: {_eq: "
+            + str(book_id)
+            + "}}, _set: {rating: "
+            + str(rating)
+            + "}) { returning { id } } }"
+        )
+        data = await self._request(mutation)
+        return data.get("update_user_book", {})
+
+    async def update_user_book_dates(
+        self, book_id: int, started_at: str | None = None, finished_at: str | None = None
+    ) -> dict[str, Any]:
+        """Update started_at/finished_at on an existing user_book."""
+        set_parts = []
+        if started_at:
+            set_parts.append(f'started_at: "{started_at}"')
+        if finished_at:
+            set_parts.append(f'finished_at: "{finished_at}"')
+        if not set_parts:
+            return {}
+        mutation = (
+            "mutation { update_user_book(where: {book_id: {_eq: "
+            + str(book_id)
+            + "}}, _set: {"
+            + ", ".join(set_parts)
+            + "}) { returning { id } } }"
+        )
+        data = await self._request(mutation)
+        return data.get("update_user_book", {})
+
     async def test_connection(self) -> dict[str, Any]:
         """Verify credentials by calling get_me and returning the user info."""
         return await self.get_me()
@@ -308,5 +341,7 @@ def _parse_user_book(raw: dict[str, Any]) -> HardcoverUserBook:
         id=raw["id"],
         status_id=raw["status_id"],
         rating=raw.get("rating"),
+        started_at=raw.get("started_at"),
+        finished_at=raw.get("finished_at"),
         book=_parse_book(raw["book"]),
     )

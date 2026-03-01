@@ -16,10 +16,14 @@ from src.db import Database
 from src.models import (
     BookMappingCreate,
     BookMappingResponse,
+    BookRatingCreate,
+    BookRatingResponse,
     ConnectionTestResult,
     HealthResponse,
+    ReadingDatesResponse,
     SettingsResponse,
     SettingsUpdate,
+    StatsResponse,
     SyncLogEntry,
     SyncLogResponse,
     SyncRuleCreate,
@@ -405,6 +409,7 @@ async def get_settings(db: Database = Depends(get_db)):
         dry_run=raw.get("dry_run", "false").lower() == "true",
         log_retention_days=int(raw.get("log_retention_days", "30")),
         fuzzy_match_threshold=float(raw.get("fuzzy_match_threshold", "0.85")),
+        sync_ratings_to_abs_tags=raw.get("sync_ratings_to_abs_tags", "false").lower() == "true",
     )
 
 
@@ -417,6 +422,8 @@ async def update_settings(data: SettingsUpdate, db: Database = Depends(get_db)):
         updates["log_retention_days"] = str(data.log_retention_days)
     if data.fuzzy_match_threshold is not None:
         updates["fuzzy_match_threshold"] = str(data.fuzzy_match_threshold)
+    if data.sync_ratings_to_abs_tags is not None:
+        updates["sync_ratings_to_abs_tags"] = str(data.sync_ratings_to_abs_tags).lower()
     # sync_interval is read-only in v1 (requires container restart)
     if updates:
         db.update_settings(updates)
@@ -524,6 +531,147 @@ async def proxy_abs_playlists(user_id: str, db: Database = Depends(get_db)):
         playlists = await abs_client.get_playlists()
         return [{"id": p.id, "name": p.name, "libraryId": p.libraryId}
                 for p in playlists]
+    except ABSError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    finally:
+        await abs_client.close()
+
+
+# ---------------------------------------------------------------------------
+# Ratings
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ratings", response_model=list[BookRatingResponse])
+async def list_ratings(
+    user_id: Optional[str] = Query(None), db: Database = Depends(get_db)
+):
+    ratings = db.list_book_ratings(user_id=user_id)
+    return [BookRatingResponse(**r) for r in ratings]
+
+
+@router.post("/ratings", response_model=BookRatingResponse, status_code=201)
+async def create_rating(data: BookRatingCreate, db: Database = Depends(get_db)):
+    """Manually rate a book (pushes to HC on next sync)."""
+    if not db.get_user(data.user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    result = db.upsert_book_rating(
+        user_id=data.user_id,
+        hardcover_book_id=data.hardcover_book_id,
+        rating=data.rating,
+        source="earmark",
+    )
+    return BookRatingResponse(**result)
+
+
+@router.get("/ratings/summary")
+async def ratings_summary(
+    user_id: Optional[str] = Query(None), db: Database = Depends(get_db)
+):
+    ratings = db.list_book_ratings(user_id=user_id)
+    if not ratings:
+        return {"total": 0, "avg": None, "distribution": {}}
+    values = [r["rating"] for r in ratings if r.get("rating")]
+    distribution: dict[str, int] = {}
+    for v in values:
+        bucket = str(round(v * 2) / 2)  # round to 0.5 increments
+        distribution[bucket] = distribution.get(bucket, 0) + 1
+    return {
+        "total": len(values),
+        "avg": round(sum(values) / len(values), 2) if values else None,
+        "distribution": distribution,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reading Dates
+# ---------------------------------------------------------------------------
+
+
+@router.get("/dates", response_model=list[ReadingDatesResponse])
+async def list_dates(
+    user_id: Optional[str] = Query(None), db: Database = Depends(get_db)
+):
+    dates = db.list_reading_dates(user_id=user_id)
+    return [ReadingDatesResponse(**d) for d in dates]
+
+
+# ---------------------------------------------------------------------------
+# Stats
+# ---------------------------------------------------------------------------
+
+
+@router.get("/stats/{user_id}")
+async def get_stats(user_id: str, db: Database = Depends(get_db)):
+    user = db.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Earmark DB stats
+    mappings = db.list_book_mappings(user_id=user_id)
+    ratings = db.list_book_ratings(user_id=user_id)
+    dates = db.list_reading_dates(user_id=user_id)
+    rating_values = [r["rating"] for r in ratings if r.get("rating")]
+
+    # ABS stats
+    abs_client = AudiobookshelfClient(
+        base_url=user["abs_url"], api_key=user["abs_api_key"]
+    )
+    listening_time = 0.0
+    abs_finished = 0
+    abs_in_progress = 0
+    hc_status_counts: dict[str, int] = {}
+
+    try:
+        me_data = await abs_client.get_me()
+        for p in me_data.get("mediaProgress", []):
+            if p.get("isFinished"):
+                abs_finished += 1
+            elif p.get("progress", 0) > 0:
+                abs_in_progress += 1
+            listening_time += p.get("currentTime", 0)
+    except ABSError:
+        pass
+
+    # HC status counts
+    hc_client = HardcoverClient(token=user["hardcover_token"])
+    try:
+        all_books = await hc_client.get_user_books()
+        for ub in all_books:
+            status_name = {1: "Want to Read", 2: "Currently Reading", 3: "Read", 5: "DNF"}.get(
+                ub.status_id, f"Status {ub.status_id}"
+            )
+            hc_status_counts[status_name] = hc_status_counts.get(status_name, 0) + 1
+    except HardcoverError:
+        pass
+    finally:
+        await hc_client.close()
+        await abs_client.close()
+
+    return StatsResponse(
+        user_id=user_id,
+        hc_status_counts=hc_status_counts,
+        total_mapped_books=len(mappings),
+        total_ratings=len(rating_values),
+        avg_rating=round(sum(rating_values) / len(rating_values), 2) if rating_values else None,
+        books_with_dates=len(dates),
+        listening_time_hours=round(listening_time / 3600, 1),
+        abs_books_finished=abs_finished,
+        abs_books_in_progress=abs_in_progress,
+    )
+
+
+@router.get("/stats/{user_id}/sessions")
+async def get_sessions(user_id: str, db: Database = Depends(get_db)):
+    user = db.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    abs_client = AudiobookshelfClient(
+        base_url=user["abs_url"], api_key=user["abs_api_key"]
+    )
+    try:
+        sessions = await abs_client.get_listening_sessions(limit=50)
+        return sessions
     except ABSError as e:
         raise HTTPException(status_code=502, detail=str(e))
     finally:

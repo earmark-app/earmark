@@ -225,6 +225,7 @@ class SettingsResponse(BaseModel):
     dry_run: bool = False
     log_retention_days: int = 30
     fuzzy_match_threshold: float = 0.85
+    sync_ratings_to_abs_tags: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -232,6 +233,57 @@ class SettingsUpdate(BaseModel):
     dry_run: Optional[bool] = None
     log_retention_days: Optional[int] = None
     fuzzy_match_threshold: Optional[float] = None
+    sync_ratings_to_abs_tags: Optional[bool] = None
+
+
+# --- Book Ratings ---
+
+
+class BookRatingResponse(BaseModel):
+    id: str
+    user_id: str
+    hardcover_book_id: int
+    abs_library_item_id: Optional[str] = None
+    rating: Optional[float] = None
+    source: str = "hardcover"
+    synced_to_abs: bool = False
+    last_synced_at: Optional[str] = None
+
+
+class BookRatingCreate(BaseModel):
+    user_id: str
+    hardcover_book_id: int
+    rating: float
+
+
+# --- Reading Dates ---
+
+
+class ReadingDatesResponse(BaseModel):
+    id: str
+    user_id: str
+    hardcover_book_id: int
+    abs_library_item_id: Optional[str] = None
+    date_started: Optional[str] = None
+    date_finished: Optional[str] = None
+    source_started: Optional[str] = None
+    source_finished: Optional[str] = None
+    last_synced_at: Optional[str] = None
+
+
+# --- Stats ---
+
+
+class StatsResponse(BaseModel):
+    user_id: str
+    hc_status_counts: dict[str, int] = Field(default_factory=dict)
+    total_mapped_books: int = 0
+    total_ratings: int = 0
+    avg_rating: Optional[float] = None
+    books_with_dates: int = 0
+    listening_time_hours: float = 0.0
+    abs_books_finished: int = 0
+    abs_books_in_progress: int = 0
 
 
 # --- Match Result (internal) ---
@@ -277,6 +329,8 @@ class HardcoverUserBook(BaseModel):
     id: int
     status_id: int
     rating: Optional[float] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
     book: HardcoverBook
 
 
@@ -324,6 +378,8 @@ class ABSMediaProgress(BaseModel):
     currentTime: float = 0.0
     isFinished: bool = False
     duration: float = 0.0
+    startedAt: Optional[int] = None  # Unix timestamp
+    finishedAt: Optional[int] = None  # Unix timestamp
 
 
 class ABSLibrary(BaseModel):

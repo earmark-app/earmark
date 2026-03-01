@@ -305,6 +305,35 @@ class AudiobookshelfClient:
             },
         )
 
+    # --- Listening Stats ---
+
+    async def get_listening_stats(self) -> dict:
+        """Return aggregated listening stats for the current user."""
+        return await self._request("GET", "/api/me/listening-stats")
+
+    async def get_listening_sessions(self, limit: int = 50) -> list[dict]:
+        """Return recent listening sessions."""
+        data = await self._request(
+            "GET", "/api/me/listening-sessions", params={"itemsPerPage": limit}
+        )
+        return data.get("sessions", [])
+
+    # --- Tags ---
+
+    async def update_item_tags(self, item_id: str, tags: list[str]) -> dict:
+        """Update tags on a library item via media metadata."""
+        return await self._request(
+            "PATCH",
+            f"/api/items/{item_id}/media",
+            json={"metadata": {"tags": tags}},
+        )
+
+    async def get_item_tags(self, item_id: str) -> list[str]:
+        """Get current tags for a library item."""
+        data = await self._request("GET", f"/api/items/{item_id}")
+        metadata = data.get("media", {}).get("metadata", {})
+        return metadata.get("tags", [])
+
     # --- Connection test ---
 
     async def test_connection(self) -> dict:
