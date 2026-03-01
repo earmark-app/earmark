@@ -6,7 +6,7 @@ services:
     ports:
       - "8787:8787"
     volumes:
-      - earmark_data:/data
+      - ${PATH_CONFIG}/earmark:/data
     environment:
       - TZ=Europe/Berlin
       - LOG_LEVEL=info
@@ -15,6 +15,3 @@ services:
       interval: 60s
       timeout: 10s
       retries: 3
-
-volumes:
-  earmark_data:

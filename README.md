@@ -108,13 +108,10 @@ services:
     ports:
       - "8787:8787"
     volumes:
-      - earmark_data:/data
+      - ${PATH_CONFIG}/earmark:/data
     environment:
       - TZ=Europe/Berlin
       - GUI_PASSWORD=changeme  # optional
-
-volumes:
-  earmark_data:
 ```
 
 ### Getting Your Credentials
