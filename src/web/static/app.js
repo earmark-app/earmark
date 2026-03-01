@@ -21,13 +21,19 @@
     };
 
     const ACTION_ICONS = {
-        added_to_collection: '\u2705',
+        sync_started: '\u25b6\ufe0f',
+        sync_completed: '\u2705',
+        no_change: '\u2796',
+        added_to_collection: '\u2795',
         removed_from_collection: '\u274c',
         progress_updated: '\ud83d\udcca',
         status_updated: '\ud83d\udcdd',
         progress_synced_to_abs: '\ud83d\udce4',
+        ratings_extracted: '\u2b50',
+        dates_synced: '\ud83d\udcc5',
         match_found: '\ud83d\udd17',
         match_failed: '\u26a0\ufe0f',
+        warning: '\u26a0\ufe0f',
         error: '\ud83d\udea8',
     };
 
@@ -320,10 +326,15 @@
                                         ${logs.map((entry) => {
                                             const icon = ACTION_ICONS[entry.action] || '\u2139\ufe0f';
                                             const details = entry.details ? (typeof entry.details === 'string' ? JSON.parse(entry.details) : entry.details) : {};
+                                            const bt = entry.action === 'error' ? 'error'
+                                                : (entry.action === 'match_failed' || entry.action === 'warning') ? 'warning'
+                                                : (entry.action === 'sync_completed' || entry.action === 'sync_started') ? 'success'
+                                                : entry.action === 'no_change' ? 'muted'
+                                                : 'info';
                                             return `
                                                 <tr>
                                                     <td><span class="text-lg">${icon}</span></td>
-                                                    <td><span class="badge badge-${entry.action === 'error' ? 'error' : entry.action === 'match_failed' ? 'warning' : 'info'}">${escapeHtml(entry.action)}</span></td>
+                                                    <td><span class="badge badge-${bt}">${escapeHtml(entry.action.replace(/_/g, ' '))}</span></td>
                                                     <td class="text-gray-400">${entry.direction ? DIRECTION_LABELS[entry.direction] || entry.direction : '-'}</td>
                                                     <td class="text-gray-300 max-w-xs truncate">${escapeHtml(details.title || details.message || JSON.stringify(details).slice(0, 80))}</td>
                                                     <td class="text-gray-500 whitespace-nowrap">${timeAgo(entry.created_at)}</td>
@@ -1065,12 +1076,19 @@
                         <div>
                             <select id="log-filter-action" class="text-sm">
                                 <option value="">All Actions</option>
+                                <option value="sync_started">Sync Started</option>
+                                <option value="sync_completed">Sync Completed</option>
+                                <option value="no_change">No Change</option>
                                 <option value="added_to_collection">Added to Collection</option>
                                 <option value="removed_from_collection">Removed from Collection</option>
                                 <option value="progress_updated">Progress Updated</option>
                                 <option value="status_updated">Status Updated</option>
+                                <option value="progress_synced_to_abs">Progress Synced to ABS</option>
+                                <option value="ratings_extracted">Ratings Extracted</option>
+                                <option value="dates_synced">Dates Synced</option>
                                 <option value="match_found">Match Found</option>
                                 <option value="match_failed">Match Failed</option>
+                                <option value="warning">Warning</option>
                                 <option value="error">Error</option>
                             </select>
                         </div>
@@ -1142,11 +1160,16 @@
                             const icon = ACTION_ICONS[entry.action] || '\u2139\ufe0f';
                             const user = users.find((u) => u.id === entry.user_id);
                             const details = entry.details ? (typeof entry.details === 'string' ? (() => { try { return JSON.parse(entry.details); } catch { return { raw: entry.details }; } })() : entry.details) : {};
+                            const badgeType = entry.action === 'error' ? 'error'
+                                : (entry.action === 'match_failed' || entry.action === 'warning') ? 'warning'
+                                : (entry.action === 'sync_completed' || entry.action === 'sync_started') ? 'success'
+                                : entry.action === 'no_change' ? 'muted'
+                                : 'info';
                             return `
                                 <tr>
                                     <td><span class="text-lg">${icon}</span></td>
                                     <td class="text-gray-300">${escapeHtml(user?.name || entry.user_id || '-')}</td>
-                                    <td><span class="badge badge-${entry.action === 'error' ? 'error' : entry.action === 'match_failed' ? 'warning' : 'info'}">${escapeHtml(entry.action)}</span></td>
+                                    <td><span class="badge badge-${badgeType}">${escapeHtml(entry.action.replace(/_/g, ' '))}</span></td>
                                     <td class="text-gray-400">${entry.direction ? DIRECTION_LABELS[entry.direction] || entry.direction : '-'}</td>
                                     <td class="text-gray-300 max-w-sm truncate" title="${escapeHtml(JSON.stringify(details))}">${escapeHtml(details.title || details.message || details.raw || JSON.stringify(details).slice(0, 100))}</td>
                                     <td class="text-gray-500 whitespace-nowrap">${formatDate(entry.created_at)}</td>

@@ -125,6 +125,10 @@ class SyncEngine:
             return {"status": "skipped", "message": "User disabled"}
 
         logger.info("Starting sync for user: %s", user["name"])
+        self.db.add_sync_log(
+            action="sync_started", user_id=user["id"],
+            details={"message": f"Sync started for {user['name']}"},
+        )
 
         hc_client = HardcoverClient(user["hardcover_token"])
         abs_client = AudiobookshelfClient(user["abs_url"], user["abs_api_key"])
@@ -146,15 +150,26 @@ class SyncEngine:
             all_hc_user_books = []
             try:
                 all_hc_user_books = await hc_client.get_user_books()
+                logger.info("Fetched %d HC user_books", len(all_hc_user_books))
             except HardcoverError as e:
                 logger.warning("Failed to fetch all HC user_books: %s", e)
+                self.db.add_sync_log(
+                    action="warning", user_id=user["id"],
+                    details={"message": f"Failed to fetch HC books: {e}", "platform": "hardcover"},
+                )
 
             # Fetch ABS me_data once (shared across sync phases)
             me_data = None
             try:
                 me_data = await abs_client.get_me()
+                abs_progress_count = len((me_data or {}).get("mediaProgress", []))
+                logger.info("Fetched ABS me data (%d progress entries)", abs_progress_count)
             except ABSError as e:
                 logger.warning("Failed to fetch ABS me data: %s", e)
+                self.db.add_sync_log(
+                    action="warning", user_id=user["id"],
+                    details={"message": f"Failed to fetch ABS data: {e}", "platform": "audiobookshelf"},
+                )
 
             hc_results = await self._run_hc_to_abs(user, hc_client, abs_client, hc_to_abs_rules)
             abs_results = await self._run_abs_to_hc(user, hc_client, abs_client, abs_to_hc_rules, me_data=me_data)
@@ -174,6 +189,21 @@ class SyncEngine:
             except Exception:
                 logger.debug("Could not fetch HC dates, skipping date sync")
             dates_result = self._sync_reading_dates(user, all_hc_user_books, me_data, hc_date_data)
+
+            # Summary log entry
+            summary = {
+                "message": f"Sync completed for {user['name']}",
+                "hc_books_fetched": len(all_hc_user_books),
+                "hc_to_abs_rules": hc_results.get("rules_processed", 0),
+                "abs_to_hc_updates": abs_results.get("status_updates", 0),
+                "hc_to_abs_progress_synced": hc_to_abs_progress.get("synced", 0),
+                "ratings_extracted": ratings_result.get("extracted", 0),
+                "dates_synced": dates_result.get("synced", 0),
+            }
+            self.db.add_sync_log(
+                action="sync_completed", user_id=user["id"],
+                details=summary,
+            )
 
             return {
                 "status": "ok",
@@ -218,6 +248,10 @@ class SyncEngine:
     ) -> dict:
         """Phase 1: Sync Hardcover lists/statuses to ABS collections/playlists."""
         if not rules:
+            self.db.add_sync_log(
+                action="no_change", user_id=user["id"], direction="hc_to_abs",
+                details={"message": "No HC\u2192ABS rules configured"},
+            )
             return {"rules_processed": 0}
 
         results = {"rules_processed": 0, "added": 0, "removed": 0}
@@ -390,6 +424,10 @@ class SyncEngine:
     ) -> dict:
         """Phase 2: Sync ABS progress to Hardcover statuses."""
         if not rules:
+            self.db.add_sync_log(
+                action="no_change", user_id=user["id"], direction="abs_to_hc",
+                details={"message": "No ABS\u2192HC rules configured"},
+            )
             return {"rules_processed": 0}
 
         results = {"rules_processed": 0, "status_updates": 0}
@@ -403,6 +441,10 @@ class SyncEngine:
             return {"rules_processed": 0, "error": str(e)}
 
         if not progress_list:
+            self.db.add_sync_log(
+                action="no_change", user_id=user["id"], direction="abs_to_hc",
+                details={"message": "No ABS listening progress found"},
+            )
             return {"rules_processed": len(rules), "status_updates": 0}
 
         matcher = BookMatcher(db=self.db, threshold=self._get_fuzzy_threshold())
@@ -510,6 +552,10 @@ class SyncEngine:
         """When HC status is 'Read', mark the ABS item as finished."""
         results = {"synced": 0, "skipped": 0}
         if not hc_user_books:
+            self.db.add_sync_log(
+                action="no_change", user_id=user["id"], direction="hc_to_abs",
+                details={"message": "No HC books to check for status\u2192progress sync"},
+            )
             return results
 
         for ub in hc_user_books:
@@ -577,6 +623,17 @@ class SyncEngine:
             )
             results["synced"] += 1
 
+        if results["synced"] == 0 and results["skipped"] == 0:
+            self.db.add_sync_log(
+                action="no_change", user_id=user["id"], direction="hc_to_abs",
+                details={"message": "No HC 'Read' books to sync to ABS progress"},
+            )
+        elif results["synced"] == 0 and results["skipped"] > 0:
+            self.db.add_sync_log(
+                action="no_change", user_id=user["id"], direction="hc_to_abs",
+                details={"message": f"HC\u2192ABS progress: {results['skipped']} already synced, nothing new"},
+            )
+
         return results
 
     # --- Feature 2: Ratings extraction ---
@@ -597,6 +654,16 @@ class SyncEngine:
                 abs_library_item_id=abs_item_id,
             )
             results["extracted"] += 1
+        if results["extracted"] > 0:
+            self.db.add_sync_log(
+                action="ratings_extracted", user_id=user["id"],
+                details={"message": f"Extracted {results['extracted']} rating(s) from HC", "count": results["extracted"]},
+            )
+        else:
+            self.db.add_sync_log(
+                action="no_change", user_id=user["id"],
+                details={"message": "No new ratings found on HC"},
+            )
         return results
 
     async def _sync_ratings_to_abs_tags(self, user: dict, abs_client: AudiobookshelfClient):
@@ -708,6 +775,17 @@ class SyncEngine:
                     source_finished=source_finished,
                 )
                 results["synced"] += 1
+
+        if results["synced"] > 0:
+            self.db.add_sync_log(
+                action="dates_synced", user_id=user["id"],
+                details={"message": f"Merged reading dates for {results['synced']} book(s)", "count": results["synced"]},
+            )
+        else:
+            self.db.add_sync_log(
+                action="no_change", user_id=user["id"],
+                details={"message": "No reading dates to merge"},
+            )
 
         return results
 
