@@ -90,6 +90,8 @@ All configuration happens in the **web GUI**. Environment variables handle boots
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PUID` | `1000` | User ID for file permissions (LinuxServer-style) |
+| `PGID` | `1000` | Group ID for file permissions (LinuxServer-style) |
 | `TZ` | `UTC` | Timezone for cron and logs |
 | `LOG_LEVEL` | `info` | `debug` · `info` · `warning` · `error` |
 | `DATA_DIR` | `/data` | SQLite DB location |
@@ -110,6 +112,8 @@ services:
     volumes:
       - ${PATH_CONFIG}/earmark:/data
     environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
       - TZ=Europe/Berlin
       - GUI_PASSWORD=changeme  # optional
 ```

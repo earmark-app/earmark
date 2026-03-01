@@ -8,6 +8,8 @@ services:
     volumes:
       - ${PATH_CONFIG}/earmark:/data
     environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
       - TZ=Europe/Berlin
       - LOG_LEVEL=info
     healthcheck:

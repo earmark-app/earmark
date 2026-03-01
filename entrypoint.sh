@@ -1,6 +1,23 @@
 #!/bin/bash
 set -e
 
+# LinuxServer-style PUID/PGID support
+PUID=${PUID:-1000}
+PGID=${PGID:-1000}
+
+if [ "$(id -u)" = "0" ]; then
+    # Update earmark user/group to match requested PUID/PGID
+    groupmod -o -g "$PGID" earmark
+    usermod -o -u "$PUID" earmark
+
+    # Ensure directories are writable
+    mkdir -p /data
+    chown -R earmark:earmark /data /app
+
+    echo "Running as uid=$PUID gid=$PGID"
+    exec gosu earmark "$0" "$@"
+fi
+
 # Graceful shutdown handler
 cleanup() {
     echo "Received shutdown signal, stopping..."

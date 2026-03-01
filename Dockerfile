@@ -1,8 +1,8 @@
 FROM python:3.12-slim AS base
 
-# Install supercronic (cron for containers)
+# Install supercronic and gosu (for runtime user switching)
 ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+RUN apt-get update && apt-get install -y --no-install-recommends curl gosu && \
     SUPERCRONIC_URL="https://github.com/aptible/supercronic/releases/download/v0.2.33/supercronic-linux-${TARGETARCH}" && \
     curl -fsSL "${SUPERCRONIC_URL}" -o /usr/local/bin/supercronic && \
     chmod +x /usr/local/bin/supercronic && \
@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && \
 
 WORKDIR /app
 
-# Create non-root user
-RUN groupadd -r earmark && useradd -r -g earmark earmark
+# Create non-root user (PUID/PGID overridable at runtime)
+RUN groupadd -g 1000 earmark && useradd -u 1000 -g earmark -s /bin/bash earmark
 
 # Install dependencies
 COPY requirements.txt .
@@ -24,8 +24,6 @@ COPY --chmod=755 entrypoint.sh /app/entrypoint.sh
 
 # Data directory (mount as volume)
 RUN mkdir -p /data && chown -R earmark:earmark /app /data
-
-USER earmark
 
 EXPOSE 8780
 
