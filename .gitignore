@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Data
+data/
+*.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test / cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
+.env
+
+# OMC
+.omc/

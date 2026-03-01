@@ -1,0 +1,2 @@
+# Sync every 15 minutes (fixed interval; v1 limitation — change requires container restart)
+*/15 * * * * cd /app && python -m src.sync_engine 2>&1

@@ -1,0 +1,8 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+httpx>=0.28
+gql[httpx]>=3.5
+tenacity>=9.0
+pydantic>=2.10
+pydantic-settings>=2.6
+rapidfuzz>=3.10

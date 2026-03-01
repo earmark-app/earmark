@@ -1,0 +1,20 @@
+services:
+  earmark:
+    build: .
+    container_name: earmark
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - earmark_data:/data
+    environment:
+      - TZ=Europe/Berlin
+      - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r = httpx.get('http://localhost:8787/api/health'); r.raise_for_status()"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  earmark_data:

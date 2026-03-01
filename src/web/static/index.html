@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Earmark - Audiobookshelf / Hardcover Sync</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            200: '#bae6fd',
+                            300: '#7dd3fc',
+                            400: '#38bdf8',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                            700: '#0369a1',
+                            800: '#075985',
+                            900: '#0c4a6e',
+                        },
+                        surface: {
+                            50: '#f8fafc',
+                            100: '#f1f5f9',
+                            200: '#e2e8f0',
+                            700: '#1e293b',
+                            750: '#1a2332',
+                            800: '#0f172a',
+                            850: '#0c1322',
+                            900: '#020617',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body class="dark h-full bg-surface-900 text-gray-200 antialiased">
+    <div id="app" class="flex h-full">
+        <!-- Sidebar -->
+        <aside id="sidebar" class="flex flex-col w-64 min-h-full bg-surface-800 border-r border-surface-700 shrink-0">
+            <!-- Logo / Brand -->
+            <div class="flex items-center gap-3 px-5 py-5 border-b border-surface-700">
+                <div class="flex items-center justify-center w-9 h-9 rounded-lg bg-brand-600 text-white font-bold text-lg">E</div>
+                <div>
+                    <h1 class="text-lg font-semibold text-white leading-tight">Earmark</h1>
+                    <p class="text-xs text-gray-400 leading-tight">ABS / Hardcover Sync</p>
+                </div>
+            </div>
+
+            <!-- Navigation -->
+            <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto custom-scrollbar">
+                <a href="#/" class="nav-link group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors" data-view="dashboard">
+                    <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+                    Dashboard
+                </a>
+                <a href="#/users" class="nav-link group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors" data-view="users">
+                    <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                    Users
+                </a>
+                <a href="#/rules" class="nav-link group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors" data-view="rules">
+                    <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    Sync Rules
+                </a>
+                <a href="#/mappings" class="nav-link group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors" data-view="mappings">
+                    <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                    Mappings
+                </a>
+                <a href="#/log" class="nav-link group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors" data-view="log">
+                    <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+                    Sync Log
+                </a>
+                <a href="#/settings" class="nav-link group flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors" data-view="settings">
+                    <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    Settings
+                </a>
+            </nav>
+
+            <!-- Health status footer -->
+            <div class="px-4 py-3 border-t border-surface-700">
+                <div id="health-status" class="flex items-center gap-2 text-xs text-gray-500">
+                    <span class="w-2 h-2 rounded-full bg-gray-600 animate-pulse" id="health-dot"></span>
+                    <span id="health-text">Connecting...</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main content area -->
+        <main class="flex-1 flex flex-col min-h-full overflow-hidden">
+            <!-- Top bar -->
+            <header class="flex items-center justify-between px-6 py-4 border-b border-surface-700 bg-surface-850 shrink-0">
+                <h2 id="page-title" class="text-xl font-semibold text-white">Dashboard</h2>
+                <div class="flex items-center gap-3">
+                    <button id="mobile-menu-btn" class="lg:hidden p-2 rounded-lg hover:bg-surface-700 transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Content area -->
+            <div id="content" class="flex-1 overflow-y-auto custom-scrollbar p-6">
+                <!-- Views are rendered here by app.js -->
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast container -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+    <!-- Confirmation modal -->
+    <div id="confirm-modal" class="hidden fixed inset-0 z-40 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" id="confirm-overlay"></div>
+        <div class="relative bg-surface-800 border border-surface-700 rounded-xl shadow-2xl p-6 max-w-md w-full mx-4 animate-fade-in">
+            <h3 id="confirm-title" class="text-lg font-semibold text-white mb-2">Confirm</h3>
+            <p id="confirm-message" class="text-gray-400 text-sm mb-6"></p>
+            <div class="flex justify-end gap-3">
+                <button id="confirm-cancel" class="px-4 py-2 text-sm font-medium rounded-lg bg-surface-700 hover:bg-surface-600 text-gray-300 transition-colors">Cancel</button>
+                <button id="confirm-ok" class="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 hover:bg-red-500 text-white transition-colors">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
