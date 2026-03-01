@@ -102,7 +102,7 @@ All configuration happens in the **web GUI**. Environment variables handle boots
 ```yaml
 services:
   earmark:
-    image: ghcr.io/trahloff/earmark:latest  # or build: .
+    image: ghcr.io/earmark-app/earmark:latest  # or build: .
     container_name: earmark
     restart: unless-stopped
     ports:
