@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Earmark is a Dockerized bidirectional sync service between **Hardcover** (book tracking, GraphQL API) and **Audiobookshelf** (self-hosted audiobook server, REST API). It syncs Hardcover reading statuses into ABS collections/playlists and ABS reading progress back to Hardcover. Multi-user, configured via a web GUI on port 8787.
+Earmark is a Dockerized bidirectional sync service between **Hardcover** (book tracking, GraphQL API) and **Audiobookshelf** (self-hosted audiobook server, REST API). It syncs Hardcover reading statuses into ABS collections/playlists and ABS reading progress back to Hardcover. Multi-user, configured via a web GUI on port 8780.
 
 The full specification lives in `spec.md` — refer to it for API details, database schema, sync logic, and edge cases.
 
@@ -25,7 +25,7 @@ The full specification lives in `spec.md` — refer to it for API details, datab
 pip install -r requirements.txt
 
 # Run the web server (development)
-uvicorn src.main:app --host 0.0.0.0 --port 8787 --reload
+uvicorn src.main:app --host 0.0.0.0 --port 8780 --reload
 
 # Run sync engine manually
 python -m src.sync_engine
@@ -83,7 +83,7 @@ src/
 | `DATA_DIR` | `/data` | SQLite DB location |
 | `GUI_PASSWORD` | *(none)* | Enables HTTP Basic Auth if set |
 | `DRY_RUN` | `false` | Log changes without executing |
-| `PORT` | `8787` | Web GUI port |
+| `PORT` | `8780` | Web GUI port |
 
 ## External APIs
 

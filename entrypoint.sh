@@ -11,7 +11,7 @@ cleanup() {
 trap cleanup SIGTERM SIGINT
 
 # Start the web GUI in the background
-python -m uvicorn src.main:app --host 0.0.0.0 --port 8787 &
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8780 &
 UVICORN_PID=$!
 
 # Start the cron scheduler in the background

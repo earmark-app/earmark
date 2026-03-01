@@ -29,7 +29,7 @@
 docker compose up -d
 ```
 
-Open **[http://localhost:8787](http://localhost:8787)** → Add a user → Create a sync rule → Hit **Sync Now**. That's it.
+Open **[http://localhost:8780](http://localhost:8780)** → Add a user → Create a sync rule → Hit **Sync Now**. That's it.
 
 ## ✨ What It Does
 
@@ -95,7 +95,7 @@ All configuration happens in the **web GUI**. Environment variables handle boots
 | `DATA_DIR` | `/data` | SQLite DB location |
 | `GUI_PASSWORD` | — | Set to enable HTTP Basic Auth (user: `admin`) |
 | `DRY_RUN` | `false` | Log changes without executing writes |
-| `PORT` | `8787` | Web GUI port |
+| `PORT` | `8780` | Web GUI port |
 
 ### Docker Compose
 
@@ -106,7 +106,7 @@ services:
     container_name: earmark
     restart: unless-stopped
     ports:
-      - "8787:8787"
+      - "8780:8780"
     volumes:
       - ${PATH_CONFIG}/earmark:/data
     environment:
@@ -168,7 +168,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 
 # Run locally
-DATA_DIR=./data LOG_LEVEL=debug uvicorn src.main:app --reload --port 8787
+DATA_DIR=./data LOG_LEVEL=debug uvicorn src.main:app --reload --port 8780
 
 # Run tests
 pytest tests/ -v

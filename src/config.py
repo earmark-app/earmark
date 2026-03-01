@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     data_dir: str = "/data"
     gui_password: str = ""
     dry_run: bool = False
-    port: int = 8787
+    port: int = 8780
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

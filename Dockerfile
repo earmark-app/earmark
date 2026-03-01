@@ -27,6 +27,6 @@ RUN mkdir -p /data && chown -R earmark:earmark /app /data
 
 USER earmark
 
-EXPOSE 8787
+EXPOSE 8780
 
 CMD ["/app/entrypoint.sh"]
