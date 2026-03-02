@@ -199,7 +199,9 @@ class SyncEngine:
                 )
 
             hc_results = await self._run_hc_to_abs(user, hc_client, abs_admin_client, abs_user_client, hc_to_abs_rules)
-            abs_results = await self._run_abs_to_hc(user, hc_client, abs_admin_client, abs_to_hc_rules, me_data=me_data)
+            # ABS→HC uses user client (progress is user-scoped), fallback to admin
+            abs_me_client = abs_user_client or abs_admin_client
+            abs_results = await self._run_abs_to_hc(user, hc_client, abs_me_client, abs_to_hc_rules, me_data=me_data)
 
             # Feature 1: HC status → ABS progress (user-scoped)
             progress_client = abs_user_client or abs_admin_client
