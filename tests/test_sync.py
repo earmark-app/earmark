@@ -39,14 +39,22 @@ def dry_engine(db, dry_run_config):
     return SyncEngine(db=db, config=dry_run_config)
 
 
+def _setup_global_abs(db):
+    """Configure global ABS settings for tests."""
+    db.update_settings({
+        "abs_url": "http://abs.test",
+        "abs_api_key": "abs_admin_key",
+    })
+
+
 @pytest.fixture
 def user_with_rule(db):
     """Create a user with an HC->ABS sync rule."""
+    _setup_global_abs(db)
     user = db.create_user({
         "name": "Test User",
         "hardcover_token": "hc_token",
-        "abs_url": "http://abs.test",
-        "abs_api_key": "abs_key",
+        "abs_user_id": "abs_user_001",
     })
     rule = db.create_sync_rule({
         "user_id": user["id"],
@@ -63,11 +71,11 @@ def user_with_rule(db):
 @pytest.fixture
 def user_with_abs_rule(db):
     """Create a user with an ABS->HC sync rule."""
+    _setup_global_abs(db)
     user = db.create_user({
         "name": "Test User",
         "hardcover_token": "hc_token",
-        "abs_url": "http://abs.test",
-        "abs_api_key": "abs_key",
+        "abs_user_id": "abs_user_001",
     })
     rule = db.create_sync_rule({
         "user_id": user["id"],
@@ -93,6 +101,7 @@ def _mock_hc_client(user_books=None):
     """Create a mock HardcoverClient."""
     client = AsyncMock()
     client.get_user_books = AsyncMock(return_value=user_books or [])
+    client.get_user_books_with_dates = AsyncMock(return_value=[])
     client.get_list_books = AsyncMock(return_value=[])
     client.set_book_status = AsyncMock(return_value={"id": 1})
     client.update_book_status = AsyncMock(return_value={"returning": [{"id": 1}]})
@@ -117,6 +126,12 @@ def _mock_abs_client(
     client.batch_add_to_playlist = AsyncMock()
     client.batch_remove_from_playlist = AsyncMock()
     client.get_me = AsyncMock(return_value=me_data or {"id": "u1", "username": "test", "mediaProgress": []})
+    client.get_users = AsyncMock(return_value=[
+        {"id": "abs_user_001", "username": "test", "type": "admin", "token": "abs_user_token"},
+    ])
+    client.update_progress = AsyncMock()
+    client.get_item_tags = AsyncMock(return_value=[])
+    client.update_item_tags = AsyncMock()
     client.close = AsyncMock()
     return client
 
@@ -413,13 +428,12 @@ class TestRunAll:
     @pytest.mark.asyncio
     async def test_error_isolation(self, engine, db):
         """Error in one user should not block others."""
+        _setup_global_abs(db)
         user1 = db.create_user({
             "name": "User 1", "hardcover_token": "tok1",
-            "abs_url": "http://abs1", "abs_api_key": "key1",
         })
         user2 = db.create_user({
             "name": "User 2", "hardcover_token": "tok2",
-            "abs_url": "http://abs2", "abs_api_key": "key2",
         })
 
         call_count = 0
@@ -451,9 +465,9 @@ class TestHCStatusToABSProgress:
 
     @pytest.fixture
     def user_with_mapping(self, db):
+        _setup_global_abs(db)
         user = db.create_user({
             "name": "Test User", "hardcover_token": "tok",
-            "abs_url": "http://abs.test", "abs_api_key": "key",
         })
         db.create_book_mapping({
             "user_id": user["id"],
@@ -550,7 +564,6 @@ class TestRatingsExtraction:
     async def test_extracts_ratings(self, engine, db):
         user = db.create_user({
             "name": "Test", "hardcover_token": "tok",
-            "abs_url": "http://abs", "abs_api_key": "key",
         })
         db.create_book_mapping({
             "user_id": user["id"], "hardcover_book_id": 50,
@@ -572,7 +585,6 @@ class TestRatingsExtraction:
     async def test_skips_no_rating(self, engine, db):
         user = db.create_user({
             "name": "Test", "hardcover_token": "tok",
-            "abs_url": "http://abs", "abs_api_key": "key",
         })
         from src.models import HardcoverUserBook, HardcoverBook
 
@@ -591,7 +603,6 @@ class TestReadingDatesSync:
     async def test_merges_dates(self, engine, db):
         user = db.create_user({
             "name": "Test", "hardcover_token": "tok",
-            "abs_url": "http://abs", "abs_api_key": "key",
         })
         db.create_book_mapping({
             "user_id": user["id"], "hardcover_book_id": 60,
@@ -627,7 +638,6 @@ class TestReadingDatesSync:
     async def test_graceful_missing_dates(self, engine, db):
         user = db.create_user({
             "name": "Test", "hardcover_token": "tok",
-            "abs_url": "http://abs", "abs_api_key": "key",
         })
         from src.models import HardcoverUserBook, HardcoverBook
 

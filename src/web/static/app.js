@@ -462,16 +462,12 @@
                             <div id="hc-test-result" class="text-xs mt-1"></div>
                         </div>
                         <div class="space-y-1">
-                            <div class="flex items-center justify-between">
-                                <label class="block text-sm text-gray-400">Audiobookshelf URL</label>
-                                <span class="text-xs text-gray-500">Settings &rarr; Users &rarr; API Keys</span>
-                            </div>
-                            <input type="url" name="abs_url" value="${escapeHtml(user?.abs_url || '')}" required placeholder="https://abs.example.com">
-                            <div class="flex gap-2">
-                                <input type="password" name="abs_api_key" value="" class="flex-1" placeholder="${isEdit ? 'Leave blank to keep current' : 'Paste API key here'}">
-                                <button type="button" id="test-abs-btn" class="btn btn-secondary btn-sm whitespace-nowrap" title="Test ABS connection">Test</button>
-                            </div>
-                            <div id="abs-test-result" class="text-xs mt-1"></div>
+                            <label class="block text-sm text-gray-400">ABS User</label>
+                            <select name="abs_user_id" class="w-full">
+                                <option value="">Loading ABS users...</option>
+                                ${user?.abs_user_id ? `<option value="${escapeHtml(user.abs_user_id)}" selected>${escapeHtml(user.abs_user_id)}</option>` : ''}
+                            </select>
+                            <p class="text-xs text-gray-500">Configure ABS connection in Settings first</p>
                         </div>
                     </div>
                     <div class="flex items-center gap-2">
@@ -532,56 +528,43 @@
             }
         });
 
-        $('#test-abs-btn').addEventListener('click', async () => {
-            const url = $('[name="abs_url"]').value.trim();
-            const key = $('[name="abs_api_key"]').value.trim();
-            if (!url) { toast('Enter an ABS URL first', 'warning'); return; }
-            if (!key && !isEdit) { toast('Enter an ABS API key first', 'warning'); return; }
-            const btn = $('#test-abs-btn');
-            const resultDiv = $('#abs-test-result');
-            btn.disabled = true; btn.textContent = 'Testing...';
+        // Load ABS users dropdown
+        (async () => {
+            const absSelect = $('[name="abs_user_id"]');
             try {
-                let result;
-                if (isEdit && !key) {
-                    result = await api('POST', `/users/${user.id}/test`);
-                    if (result.abs_ok) {
-                        resultDiv.innerHTML = `<span class="text-green-400">Connected as <strong>${escapeHtml(result.abs_username || 'unknown')}</strong> ${result.abs_is_admin ? '(admin)' : '(non-admin)'} &mdash; ${result.abs_libraries?.length || 0} libraries</span>`;
-                    } else {
-                        resultDiv.innerHTML = `<span class="text-red-400">${escapeHtml(result.errors?.find(e => e.includes('Audiobookshelf')) || 'Failed')}</span>`;
-                    }
-                } else {
-                    result = await api('POST', '/test/abs', { url, api_key: key });
-                    if (result.ok) {
-                        resultDiv.innerHTML = `<span class="text-green-400">Connected as <strong>${escapeHtml(result.username || 'unknown')}</strong> ${result.is_admin ? '(admin)' : '(non-admin)'} &mdash; ${result.libraries?.length || 0} libraries</span>`;
-                    } else {
-                        resultDiv.innerHTML = `<span class="text-red-400">${escapeHtml(result.error || 'Failed')}</span>`;
-                    }
+                const absUsers = await api('GET', '/abs/users');
+                absSelect.innerHTML = '<option value="">Select ABS user...</option>';
+                for (const au of absUsers) {
+                    const opt = document.createElement('option');
+                    opt.value = au.id;
+                    opt.textContent = `${au.username} (${au.type})`;
+                    if (au.id === user?.abs_user_id) opt.selected = true;
+                    absSelect.appendChild(opt);
                 }
-            } catch (err) {
-                resultDiv.innerHTML = `<span class="text-red-400">${escapeHtml(err.message)}</span>`;
-            } finally {
-                btn.disabled = false; btn.textContent = 'Test';
+            } catch {
+                absSelect.innerHTML = '<option value="">Configure ABS in Settings first</option>';
             }
-        });
+        })();
 
         $('#user-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const form = e.target;
             const data = {
                 name: form.name.value.trim(),
-                abs_url: form.abs_url.value.trim(),
                 enabled: form.enabled.checked,
             };
 
-            // Only include tokens if provided (for edits, blank means keep current)
-            const hcToken = form.hardcover_token.value.trim();
-            const absKey = form.abs_api_key.value.trim();
-            if (hcToken) data.hardcover_token = hcToken;
-            if (absKey) data.abs_api_key = absKey;
+            // ABS user mapping
+            const absUserId = form.abs_user_id.value;
+            if (absUserId) data.abs_user_id = absUserId;
 
-            // For create, tokens are required
-            if (!isEdit && (!hcToken || !absKey)) {
-                toast('Both tokens are required for new users', 'error');
+            // Only include HC token if provided (for edits, blank means keep current)
+            const hcToken = form.hardcover_token.value.trim();
+            if (hcToken) data.hardcover_token = hcToken;
+
+            // For create, HC token is required
+            if (!isEdit && !hcToken) {
+                toast('Hardcover token is required for new users', 'error');
                 return;
             }
 
@@ -596,20 +579,15 @@
                 } else {
                     savedUser = await api('POST', '/users', data);
                 }
-                toast(isEdit ? 'User saved. Testing connections...' : 'User created. Testing connections...', 'info');
-                // Auto-test connections after save
+                toast(isEdit ? 'User saved. Testing Hardcover...' : 'User created. Testing Hardcover...', 'info');
+                // Auto-test Hardcover connection after save
                 try {
                     const test = await api('POST', `/users/${savedUser.id}/test`);
                     const hcOk = test.hardcover_ok;
-                    const absOk = test.abs_ok;
-                    const libs = test.abs_libraries || [];
                     let msg = '';
                     if (hcOk) msg += `HC: ${test.hardcover_username || 'connected'}`;
                     else msg += 'HC: failed';
-                    msg += ' | ';
-                    if (absOk) msg += `ABS: ${test.abs_username || 'connected'} (${libs.length} libraries)`;
-                    else msg += 'ABS: failed';
-                    toast(msg, hcOk && absOk ? 'success' : 'warning');
+                    toast(msg, hcOk ? 'success' : 'warning');
                 } catch (testErr) {
                     toast('Saved but connection test failed: ' + testErr.message, 'warning');
                 }
@@ -638,9 +616,7 @@
                         <p class="font-medium mb-2">Connection Test Results</p>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
                             <div>HC Username: <strong>${escapeHtml(result.hardcover_username || 'N/A')}</strong></div>
-                            <div>ABS Username: <strong>${escapeHtml(result.abs_username || 'N/A')}</strong></div>
-                            <div>ABS Admin: <strong>${result.abs_is_admin ? 'Yes' : 'No'}</strong></div>
-                            <div>ABS Libraries: <strong>${result.abs_libraries?.length || 0}</strong></div>
+                            <div>HC Status: <strong>${result.hardcover_ok ? 'Connected' : 'Failed'}</strong></div>
                         </div>
                         ${result.abs_libraries?.length ? `
                             <div class="mt-2 text-sm">
@@ -804,7 +780,7 @@
                         <div>
                             <label class="block text-sm text-gray-400 mb-1">ABS Library</label>
                             <select name="abs_library_id" required>
-                                <option value="">Select user first...</option>
+                                <option value="">Loading libraries...</option>
                                 ${rule?.abs_library_id ? `<option value="${escapeHtml(rule.abs_library_id)}" selected>${escapeHtml(rule.abs_library_id)}</option>` : ''}
                             </select>
                         </div>
@@ -831,12 +807,12 @@
             formContainer.innerHTML = '';
         });
 
-        // Auto-populate ABS library dropdown when user is selected
-        async function loadLibraries(userId, preselectId) {
+        // Load ABS libraries from global settings
+        async function loadLibraries(preselectId) {
             const libSelect = $('[name="abs_library_id"]');
             libSelect.innerHTML = '<option value="">Loading libraries...</option>';
             try {
-                const libs = await api('GET', `/abs/${userId}/libraries`);
+                const libs = await api('GET', '/abs/libraries');
                 libSelect.innerHTML = '<option value="">Select library...</option>';
                 for (const lib of libs) {
                     const opt = document.createElement('option');
@@ -849,24 +825,12 @@
                     libSelect.innerHTML = '<option value="">No libraries found</option>';
                 }
             } catch (err) {
-                libSelect.innerHTML = '<option value="">Failed to load libraries</option>';
+                libSelect.innerHTML = '<option value="">Configure ABS in Settings first</option>';
             }
         }
 
-        $('[name="user_id"]').addEventListener('change', (e) => {
-            const userId = e.target.value;
-            if (userId) {
-                loadLibraries(userId, rule?.abs_library_id || '');
-            } else {
-                $('[name="abs_library_id"]').innerHTML = '<option value="">Select user first...</option>';
-            }
-        });
-
-        // If editing or user is pre-selected, load libraries immediately
-        const initialUserId = $('[name="user_id"]').value;
-        if (initialUserId) {
-            loadLibraries(initialUserId, rule?.abs_library_id || '');
-        }
+        // Load libraries immediately (global, not per-user)
+        loadLibraries(rule?.abs_library_id || '');
 
         $('#rule-form').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -1387,6 +1351,24 @@
                     <div class="card">
                         <h3 class="text-white font-semibold mb-4">Sync Settings</h3>
                         <form id="settings-form" class="space-y-5">
+                            <!-- ABS Connection -->
+                            <div class="border border-surface-700 rounded-lg p-4 space-y-3">
+                                <h4 class="text-sm font-medium text-gray-300">Audiobookshelf Connection</h4>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">ABS URL</label>
+                                    <input type="url" name="abs_url" value="${escapeHtml(settings.abs_url || '')}" placeholder="https://abs.example.com">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">ABS API Key (admin/root)</label>
+                                    <div class="flex gap-2">
+                                        <input type="password" name="abs_api_key" value="" class="flex-1" placeholder="${settings.abs_api_key === '***' ? 'Leave blank to keep current' : 'Paste admin API key'}">
+                                        <button type="button" id="test-abs-settings-btn" class="btn btn-secondary btn-sm whitespace-nowrap">Test</button>
+                                    </div>
+                                    <div id="abs-settings-test-result" class="text-xs mt-1"></div>
+                                </div>
+                                <p class="text-xs text-gray-500">Use an admin/root token. This enables managing collections for all users and fetching the ABS user list.</p>
+                            </div>
+
                             <!-- Sync Interval (read-only) -->
                             <div>
                                 <label class="block text-sm text-gray-400 mb-1">Sync Interval</label>
@@ -1461,6 +1443,43 @@
                 </div>
             `;
 
+            // ABS test button in settings
+            $('#test-abs-settings-btn').addEventListener('click', async () => {
+                const url = $('[name="abs_url"]').value.trim();
+                const key = $('[name="abs_api_key"]').value.trim();
+                if (!url) { toast('Enter an ABS URL first', 'warning'); return; }
+                const btn = $('#test-abs-settings-btn');
+                const resultDiv = $('#abs-settings-test-result');
+                btn.disabled = true; btn.textContent = 'Testing...';
+                try {
+                    // If no key entered, use saved key via global test
+                    const testKey = key || '__saved__';
+                    let result;
+                    if (!key && settings.abs_api_key === '***') {
+                        // Use saved settings — test via the global endpoint
+                        result = await api('POST', '/test/abs', { url, api_key: '__use_saved__' });
+                        // Fallback: test with the current saved settings by fetching libraries
+                        try {
+                            const libs = await api('GET', '/abs/libraries');
+                            resultDiv.innerHTML = `<span class="text-green-400">Connected &mdash; ${libs.length} libraries found</span>`;
+                        } catch (err2) {
+                            resultDiv.innerHTML = `<span class="text-red-400">Failed: ${escapeHtml(err2.message)}</span>`;
+                        }
+                    } else {
+                        result = await api('POST', '/test/abs', { url, api_key: key });
+                        if (result.ok) {
+                            resultDiv.innerHTML = `<span class="text-green-400">Connected as <strong>${escapeHtml(result.username || 'unknown')}</strong> ${result.is_admin ? '(admin)' : '(non-admin)'} &mdash; ${result.libraries?.length || 0} libraries</span>`;
+                        } else {
+                            resultDiv.innerHTML = `<span class="text-red-400">${escapeHtml(result.error || 'Failed')}</span>`;
+                        }
+                    }
+                } catch (err) {
+                    resultDiv.innerHTML = `<span class="text-red-400">${escapeHtml(err.message)}</span>`;
+                } finally {
+                    btn.disabled = false; btn.textContent = 'Test';
+                }
+            });
+
             // Save settings
             $('#settings-form').addEventListener('submit', async (e) => {
                 e.preventDefault();
@@ -1471,6 +1490,11 @@
                     fuzzy_threshold: parseFloat(form.fuzzy_threshold.value),
                     sync_ratings_to_abs_tags: form.sync_ratings_to_abs_tags.checked,
                 };
+                // Include ABS settings
+                const absUrl = form.abs_url.value.trim();
+                const absKey = form.abs_api_key.value.trim();
+                if (absUrl) data.abs_url = absUrl;
+                if (absKey) data.abs_api_key = absKey;
 
                 const btn = form.querySelector('[type="submit"]');
                 btn.disabled = true;

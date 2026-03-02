@@ -605,6 +605,31 @@ class TestABSCreateCollection:
         body = json.loads(route.calls[0].request.content)
         assert body["libraryId"] == "lib2"
         assert body["name"] == "Reads"
+        assert "books" not in body
+
+    @pytest.mark.asyncio
+    async def test_create_collection_with_books(self, respx_mock):
+        route = respx_mock.post(f"{ABS_BASE}/api/collections").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "col_y",
+                    "name": "Want to Read",
+                    "libraryId": "lib1",
+                    "books": [{"id": "item1"}, {"id": "item2"}],
+                },
+            )
+        )
+        client = _abs_client()
+
+        await client.create_collection(
+            library_id="lib1", name="Want to Read", books=["item1", "item2"]
+        )
+
+        body = json.loads(route.calls[0].request.content)
+        assert body["libraryId"] == "lib1"
+        assert body["name"] == "Want to Read"
+        assert body["books"] == ["item1", "item2"]
 
 
 class TestABSBatchAddToCollection:

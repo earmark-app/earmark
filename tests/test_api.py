@@ -44,9 +44,7 @@ def sample_user_payload():
     return {
         "name": "Alice",
         "hardcover_token": "hc_token_secret",
-        "abs_url": "http://abs.local:13378",
-        "abs_api_key": "abs_key_secret",
-        "abs_library_ids": ["lib1"],
+        "abs_user_id": "abs_user_001",
         "enabled": True,
     }
 
@@ -106,8 +104,7 @@ class TestUsersCRUD:
         data = resp.json()
         assert data["name"] == "Alice"
         assert data["hardcover_token"] == "***"
-        assert data["abs_api_key"] == "***"
-        assert data["abs_url"] == "http://abs.local:13378"
+        assert data["abs_user_id"] == "abs_user_001"
         assert "id" in data
 
     def test_list_users_masks_tokens(self, client, created_user):
@@ -117,7 +114,6 @@ class TestUsersCRUD:
         assert len(users) >= 1
         found = next(u for u in users if u["id"] == created_user["id"])
         assert found["hardcover_token"] == "***"
-        assert found["abs_api_key"] == "***"
 
     def test_update_user(self, client, created_user):
         user_id = created_user["id"]
@@ -127,16 +123,15 @@ class TestUsersCRUD:
 
     def test_update_user_masked_token_not_overwritten(self, client, db, created_user):
         user_id = created_user["id"]
-        # Send masked tokens -- the real tokens should be preserved
+        # Send masked token -- the real token should be preserved
         resp = client.put(
             f"/api/users/{user_id}",
-            json={"hardcover_token": "***", "abs_api_key": "***"},
+            json={"hardcover_token": "***"},
         )
         assert resp.status_code == 200
-        # Verify real tokens are untouched in the database
+        # Verify real token is untouched in the database
         raw = db.get_user(user_id)
         assert raw["hardcover_token"] == "hc_token_secret"
-        assert raw["abs_api_key"] == "abs_key_secret"
 
     def test_delete_user(self, client, created_user):
         user_id = created_user["id"]
@@ -294,6 +289,8 @@ class TestSettings:
         assert data["dry_run"] is False
         assert data["log_retention_days"] == 30
         assert data["fuzzy_match_threshold"] == 0.85
+        assert data["abs_url"] == ""
+        assert data["abs_api_key"] == ""
 
     def test_update_settings(self, client):
         resp = client.put(
@@ -304,6 +301,25 @@ class TestSettings:
         data = resp.json()
         assert data["dry_run"] is True
         assert data["log_retention_days"] == 7
+
+    def test_update_abs_settings(self, client, db):
+        resp = client.put(
+            "/api/settings",
+            json={"abs_url": "http://abs.test:13378", "abs_api_key": "admin_key"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["abs_url"] == "http://abs.test:13378"
+        assert data["abs_api_key"] == "***"  # Masked in response
+        # Verify real key stored in DB
+        assert db.get_setting("abs_api_key") == "admin_key"
+
+    def test_masked_abs_key_not_overwritten(self, client, db):
+        # First set a real key
+        client.put("/api/settings", json={"abs_api_key": "real_key"})
+        # Now send masked key — should not overwrite
+        client.put("/api/settings", json={"abs_api_key": "***"})
+        assert db.get_setting("abs_api_key") == "real_key"
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +360,9 @@ class TestExportImport:
         assert len(data["users"]) >= 1
         exported = data["users"][0]
         assert exported["hardcover_token"] == "REDACTED"
-        assert exported["abs_api_key"] == "REDACTED"
+        assert "abs_api_key" not in exported  # ABS key is in settings now
+        assert "settings" in data
+        assert data["settings"]["abs_api_key"] == "REDACTED"
 
     def test_import_creates_users(self, client, db):
         import_data = {
@@ -352,9 +370,7 @@ class TestExportImport:
                 {
                     "name": "Imported User",
                     "hardcover_token": "hc_imported_token",
-                    "abs_url": "http://abs.imported.local",
-                    "abs_api_key": "abs_imported_key",
-                    "abs_library_ids": [],
+                    "abs_user_id": "abs_user_imported",
                     "enabled": True,
                 }
             ],

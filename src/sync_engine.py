@@ -130,10 +130,36 @@ class SyncEngine:
             details={"message": f"Sync started for {user['name']}"},
         )
 
+        # Global ABS credentials from settings
+        abs_url = self.db.get_setting("abs_url") or ""
+        abs_api_key = self.db.get_setting("abs_api_key") or ""
+        if not abs_url or not abs_api_key:
+            msg = "ABS not configured in settings"
+            logger.error("Cannot sync user %s: %s", user["name"], msg)
+            self.db.add_sync_log(
+                action="error", user_id=user["id"],
+                details={"error": msg, "platform": "audiobookshelf"},
+            )
+            return {"status": "error", "message": msg}
+
         hc_client = HardcoverClient(user["hardcover_token"])
-        abs_client = AudiobookshelfClient(user["abs_url"], user["abs_api_key"])
+        abs_admin_client = AudiobookshelfClient(abs_url, abs_api_key)
+        abs_user_client = None
 
         try:
+            # Create user-specific ABS client for playlist/progress operations
+            if user.get("abs_user_id"):
+                try:
+                    abs_users = await abs_admin_client.get_users()
+                    for au in abs_users:
+                        if au.get("id") == user["abs_user_id"]:
+                            user_token = au.get("token")
+                            if user_token:
+                                abs_user_client = AudiobookshelfClient(abs_url, user_token)
+                            break
+                except ABSError as e:
+                    logger.warning("Failed to fetch ABS users list: %s", e)
+
             rules = self.db.list_sync_rules(user_id=user["id"])
             enabled_rules = [r for r in rules if r.get("enabled")]
 
@@ -158,10 +184,11 @@ class SyncEngine:
                     details={"message": f"Failed to fetch HC books: {e}", "platform": "hardcover"},
                 )
 
-            # Fetch ABS me_data once (shared across sync phases)
+            # Fetch ABS me_data once (user-scoped for progress)
+            me_client = abs_user_client or abs_admin_client
             me_data = None
             try:
-                me_data = await abs_client.get_me()
+                me_data = await me_client.get_me()
                 abs_progress_count = len((me_data or {}).get("mediaProgress", []))
                 logger.info("Fetched ABS me data (%d progress entries)", abs_progress_count)
             except ABSError as e:
@@ -171,17 +198,18 @@ class SyncEngine:
                     details={"message": f"Failed to fetch ABS data: {e}", "platform": "audiobookshelf"},
                 )
 
-            hc_results = await self._run_hc_to_abs(user, hc_client, abs_client, hc_to_abs_rules)
-            abs_results = await self._run_abs_to_hc(user, hc_client, abs_client, abs_to_hc_rules, me_data=me_data)
+            hc_results = await self._run_hc_to_abs(user, hc_client, abs_admin_client, abs_user_client, hc_to_abs_rules)
+            abs_results = await self._run_abs_to_hc(user, hc_client, abs_admin_client, abs_to_hc_rules, me_data=me_data)
 
-            # Feature 1: HC status → ABS progress
+            # Feature 1: HC status → ABS progress (user-scoped)
+            progress_client = abs_user_client or abs_admin_client
             hc_to_abs_progress = await self._run_hc_status_to_abs_progress(
-                user, abs_client, all_hc_user_books
+                user, progress_client, all_hc_user_books
             )
             # Feature 2: Ratings extraction
             ratings_result = self._extract_ratings(user, all_hc_user_books)
-            # Feature 2b: Sync ratings to ABS tags if enabled
-            await self._sync_ratings_to_abs_tags(user, abs_client)
+            # Feature 2b: Sync ratings to ABS tags if enabled (admin for item-level ops)
+            await self._sync_ratings_to_abs_tags(user, abs_admin_client)
             # Feature 3: Reading dates sync (uses separate HC query with graceful fallback)
             hc_date_data = []
             try:
@@ -237,13 +265,16 @@ class SyncEngine:
             return {"status": "error", "message": str(e)}
         finally:
             await hc_client.close()
-            await abs_client.close()
+            await abs_admin_client.close()
+            if abs_user_client:
+                await abs_user_client.close()
 
     async def _run_hc_to_abs(
         self,
         user: dict,
         hc_client: HardcoverClient,
-        abs_client: AudiobookshelfClient,
+        abs_admin_client: AudiobookshelfClient,
+        abs_user_client: AudiobookshelfClient | None,
         rules: list[dict],
     ) -> dict:
         """Phase 1: Sync Hardcover lists/statuses to ABS collections/playlists."""
@@ -258,7 +289,7 @@ class SyncEngine:
 
         for rule in rules:
             try:
-                await self._sync_rule_hc_to_abs(user, hc_client, abs_client, rule)
+                await self._sync_rule_hc_to_abs(user, hc_client, abs_admin_client, abs_user_client, rule)
                 results["rules_processed"] += 1
             except Exception:
                 logger.exception(
@@ -277,7 +308,8 @@ class SyncEngine:
         self,
         user: dict,
         hc_client: HardcoverClient,
-        abs_client: AudiobookshelfClient,
+        abs_admin_client: AudiobookshelfClient,
+        abs_user_client: AudiobookshelfClient | None,
         rule: dict,
     ):
         """Sync a single HC->ABS rule."""
@@ -322,8 +354,8 @@ class SyncEngine:
             )
             return
 
-        # 2. Get ABS library items for matching
-        abs_items_raw = await abs_client.get_all_library_items(rule["abs_library_id"])
+        # 2. Get ABS library items for matching (always admin client)
+        abs_items_raw = await abs_admin_client.get_all_library_items(rule["abs_library_id"])
         from src.models import ABSLibraryItem
         abs_items = []
         for item in abs_items_raw:
@@ -360,9 +392,17 @@ class SyncEngine:
             return
 
         # 4. Ensure ABS target exists
+        # Use admin client for collections, user client for playlists
+        is_playlist = rule["abs_target_type"] == "playlist"
+        target_client = (abs_user_client or abs_admin_client) if is_playlist else abs_admin_client
+
         target_id = rule.get("abs_target_id")
         if not target_id:
-            target_id = await self._ensure_abs_target(abs_client, rule)
+            # Pass matched item IDs so ABS can create collections with initial books
+            initial_books = list(matched.values()) if matched else None
+            target_id = await self._ensure_abs_target(
+                target_client, rule, initial_books=initial_books
+            )
             if target_id:
                 self.db.update_sync_rule(rule_id, {"abs_target_id": target_id})
 
@@ -371,7 +411,7 @@ class SyncEngine:
             return
 
         # 5. Get current items in ABS target
-        current_abs_ids = await self._get_target_items(abs_client, rule, target_id)
+        current_abs_ids = await self._get_target_items(target_client, rule, target_id)
 
         # 6. Compute diff
         desired_abs_ids = set(matched.values())
@@ -381,9 +421,9 @@ class SyncEngine:
         # 7. Execute changes
         if not self.config.dry_run:
             if to_add:
-                await self._add_to_target(abs_client, rule, target_id, list(to_add))
+                await self._add_to_target(target_client, rule, target_id, list(to_add))
             if to_remove:
-                await self._remove_from_target(abs_client, rule, target_id, list(to_remove))
+                await self._remove_from_target(target_client, rule, target_id, list(to_remove))
         else:
             if to_add:
                 logger.info("[DRY RUN] Would add %d items to %s", len(to_add), rule["abs_target_name"])
@@ -792,7 +832,8 @@ class SyncEngine:
     # --- Helpers ---
 
     async def _ensure_abs_target(
-        self, abs_client: AudiobookshelfClient, rule: dict
+        self, abs_client: AudiobookshelfClient, rule: dict,
+        initial_books: list[str] | None = None,
     ) -> Optional[str]:
         """Find or create the ABS collection/playlist for a rule."""
         target_type = rule["abs_target_type"]
@@ -807,8 +848,10 @@ class SyncEngine:
                     col_id = col.id if hasattr(col, "id") else col.get("id", "")
                     if name == target_name:
                         return col_id
-                # Create new
-                new_col = await abs_client.create_collection(library_id, target_name)
+                # Create new — ABS requires at least one book for collections
+                new_col = await abs_client.create_collection(
+                    library_id, target_name, books=initial_books or []
+                )
                 return new_col.id if hasattr(new_col, "id") else new_col.get("id")
             else:  # playlist
                 playlists = await abs_client.get_playlists()

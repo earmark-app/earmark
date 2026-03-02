@@ -96,6 +96,12 @@ class AudiobookshelfClient:
         """Return user info including mediaProgress array."""
         return await self._request("GET", "/api/me")
 
+    async def get_users(self) -> list[dict]:
+        """Return all ABS users (admin-only). Each user has id, username, type, token."""
+        data = await self._request("GET", "/api/users")
+        # ABS may return {users: [...]} or just a list
+        return data.get("users", data) if isinstance(data, dict) else data
+
     async def get_libraries(self) -> list[ABSLibrary]:
         """Return all libraries."""
         data = await self._request("GET", "/api/libraries")
@@ -176,13 +182,16 @@ class AudiobookshelfClient:
         return [ABSCollection.model_validate(c) for c in collections]
 
     async def create_collection(
-        self, library_id: str, name: str
+        self, library_id: str, name: str, books: list[str] | None = None
     ) -> ABSCollection:
-        """Create a new collection."""
+        """Create a new collection. ABS requires at least one book."""
+        body: dict = {"libraryId": library_id, "name": name}
+        if books:
+            body["books"] = books
         data = await self._request(
             "POST",
             "/api/collections",
-            json={"libraryId": library_id, "name": name},
+            json=body,
         )
         return ABSCollection.model_validate(data)
 

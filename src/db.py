@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -19,12 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     hardcover_token TEXT NOT NULL,
     hardcover_user_id INTEGER,
     hardcover_username TEXT,
-    abs_url TEXT NOT NULL,
-    abs_api_key TEXT NOT NULL,
     abs_user_id TEXT,
-    abs_username TEXT,
-    abs_library_ids TEXT DEFAULT '[]',
-    abs_is_admin INTEGER DEFAULT 0,
     needs_token_refresh INTEGER DEFAULT 0,
     enabled INTEGER DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now')),
@@ -108,6 +103,8 @@ DEFAULT_SETTINGS = {
     "fuzzy_match_threshold": "0.85",
     "schema_version": "1",
     "sync_ratings_to_abs_tags": "false",
+    "abs_url": "",
+    "abs_api_key": "",
 }
 
 # ---------------------------------------------------------------------------
@@ -145,6 +142,15 @@ MIGRATIONS = {
             last_synced_at TEXT DEFAULT (datetime('now')),
             UNIQUE(user_id, hardcover_book_id)
         )""",
+    ],
+    # v5: Move ABS credentials from per-user to global settings.
+    # Data migration handled in _apply_migrations before DROP COLUMN.
+    5: [
+        "ALTER TABLE users DROP COLUMN abs_url",
+        "ALTER TABLE users DROP COLUMN abs_api_key",
+        "ALTER TABLE users DROP COLUMN abs_username",
+        "ALTER TABLE users DROP COLUMN abs_library_ids",
+        "ALTER TABLE users DROP COLUMN abs_is_admin",
     ],
 }
 
@@ -192,13 +198,37 @@ class Database:
         logger.info("Migrating database from v%d to v%d", current, SCHEMA_VERSION)
         with self.connect() as conn:
             for version in range(current + 1, SCHEMA_VERSION + 1):
+                # v5 data migration: preserve ABS credentials before dropping columns
+                if version == 5:
+                    try:
+                        row = conn.execute(
+                            "SELECT abs_url, abs_api_key FROM users "
+                            "WHERE abs_url IS NOT NULL AND abs_url != '' LIMIT 1"
+                        ).fetchone()
+                        if row:
+                            conn.execute(
+                                "INSERT INTO settings (key, value, updated_at) VALUES ('abs_url', ?, datetime('now')) "
+                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                                (row[0],),
+                            )
+                            conn.execute(
+                                "INSERT INTO settings (key, value, updated_at) VALUES ('abs_api_key', ?, datetime('now')) "
+                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                                (row[1],),
+                            )
+                            logger.info("Migrated ABS credentials from first user to global settings")
+                    except Exception as e:
+                        if "no such column" not in str(e).lower():
+                            raise
+                        logger.debug("v5 data migration skipped (columns already dropped): %s", e)
+
                 stmts = MIGRATIONS.get(version, [])
                 for stmt in stmts:
                     try:
                         conn.execute(stmt)
                     except Exception as e:
-                        # Column/table may already exist from a previous partial migration
-                        if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                        # Column/table may already exist or already be dropped
+                        if "duplicate column" in str(e).lower() or "already exists" in str(e).lower() or "no such column" in str(e).lower():
                             logger.debug("Migration v%d: %s (already applied)", version, e)
                         else:
                             raise
@@ -229,15 +259,14 @@ class Database:
     def create_user(self, data: dict) -> dict:
         user_id = self._gen_id()
         now = self._now()
-        library_ids = json.dumps(data.get("abs_library_ids", []))
         with self.connect() as conn:
             conn.execute(
-                """INSERT INTO users (id, name, hardcover_token, abs_url, abs_api_key,
-                   abs_library_ids, enabled, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, data["name"], data["hardcover_token"], data["abs_url"],
-                 data["abs_api_key"], library_ids, int(data.get("enabled", True)),
-                 now, now),
+                """INSERT INTO users (id, name, hardcover_token, abs_user_id,
+                   enabled, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, data["name"], data["hardcover_token"],
+                 data.get("abs_user_id"),
+                 int(data.get("enabled", True)), now, now),
             )
         return self.get_user(user_id)
 
@@ -247,9 +276,7 @@ class Database:
             if row is None:
                 return None
             d = self._row_to_dict(row)
-            d["abs_library_ids"] = json.loads(d.get("abs_library_ids", "[]"))
             d["enabled"] = bool(d.get("enabled", 1))
-            d["abs_is_admin"] = bool(d.get("abs_is_admin", 0))
             d["needs_token_refresh"] = bool(d.get("needs_token_refresh", 0))
             return d
 
@@ -259,9 +286,7 @@ class Database:
             results = []
             for row in rows:
                 d = self._row_to_dict(row)
-                d["abs_library_ids"] = json.loads(d.get("abs_library_ids", "[]"))
                 d["enabled"] = bool(d.get("enabled", 1))
-                d["abs_is_admin"] = bool(d.get("abs_is_admin", 0))
                 d["needs_token_refresh"] = bool(d.get("needs_token_refresh", 0))
                 results.append(d)
             return results
@@ -269,20 +294,16 @@ class Database:
     def update_user(self, user_id: str, data: dict) -> Optional[dict]:
         fields = []
         values = []
-        for key in ("name", "hardcover_token", "abs_url", "abs_api_key",
+        for key in ("name", "hardcover_token",
                      "hardcover_user_id", "hardcover_username",
-                     "abs_user_id", "abs_username", "abs_is_admin",
-                     "needs_token_refresh", "enabled"):
+                     "abs_user_id", "needs_token_refresh", "enabled"):
             if key in data and data[key] is not None:
-                if key in ("enabled", "abs_is_admin", "needs_token_refresh"):
+                if key in ("enabled", "needs_token_refresh"):
                     fields.append(f"{key} = ?")
                     values.append(int(data[key]))
                 else:
                     fields.append(f"{key} = ?")
                     values.append(data[key])
-        if "abs_library_ids" in data and data["abs_library_ids"] is not None:
-            fields.append("abs_library_ids = ?")
-            values.append(json.dumps(data["abs_library_ids"]))
         if not fields:
             return self.get_user(user_id)
         fields.append("updated_at = ?")

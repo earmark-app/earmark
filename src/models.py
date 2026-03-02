@@ -22,18 +22,14 @@ class HealthResponse(BaseModel):
 class UserCreate(BaseModel):
     name: str
     hardcover_token: str
-    abs_url: str
-    abs_api_key: str
-    abs_library_ids: list[str] = Field(default_factory=list)
+    abs_user_id: Optional[str] = None
     enabled: bool = True
 
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
     hardcover_token: Optional[str] = None
-    abs_url: Optional[str] = None
-    abs_api_key: Optional[str] = None
-    abs_library_ids: Optional[list[str]] = None
+    abs_user_id: Optional[str] = None
     enabled: Optional[bool] = None
 
 
@@ -43,12 +39,7 @@ class UserResponse(BaseModel):
     hardcover_token: str = "***"
     hardcover_user_id: Optional[int] = None
     hardcover_username: Optional[str] = None
-    abs_url: str
-    abs_api_key: str = "***"
     abs_user_id: Optional[str] = None
-    abs_username: Optional[str] = None
-    abs_library_ids: list[str] = Field(default_factory=list)
-    abs_is_admin: bool = False
     needs_token_refresh: bool = False
     enabled: bool = True
     created_at: Optional[str] = None
@@ -62,12 +53,7 @@ class UserDB(BaseModel):
     hardcover_token: str
     hardcover_user_id: Optional[int] = None
     hardcover_username: Optional[str] = None
-    abs_url: str
-    abs_api_key: str
     abs_user_id: Optional[str] = None
-    abs_username: Optional[str] = None
-    abs_library_ids: list[str] = Field(default_factory=list)
-    abs_is_admin: bool = False
     needs_token_refresh: bool = False
     enabled: bool = True
     created_at: Optional[str] = None
@@ -80,12 +66,7 @@ class UserDB(BaseModel):
             hardcover_token="***",
             hardcover_user_id=self.hardcover_user_id,
             hardcover_username=self.hardcover_username,
-            abs_url=self.abs_url,
-            abs_api_key="***",
             abs_user_id=self.abs_user_id,
-            abs_username=self.abs_username,
-            abs_library_ids=self.abs_library_ids,
-            abs_is_admin=self.abs_is_admin,
             needs_token_refresh=self.needs_token_refresh,
             enabled=self.enabled,
             created_at=self.created_at,
@@ -97,11 +78,6 @@ class ConnectionTestResult(BaseModel):
     hardcover_ok: bool = False
     hardcover_username: Optional[str] = None
     hardcover_user_id: Optional[int] = None
-    abs_ok: bool = False
-    abs_username: Optional[str] = None
-    abs_user_id: Optional[str] = None
-    abs_is_admin: bool = False
-    abs_libraries: list[dict] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
 
@@ -226,6 +202,8 @@ class SettingsResponse(BaseModel):
     log_retention_days: int = 30
     fuzzy_match_threshold: float = 0.85
     sync_ratings_to_abs_tags: bool = False
+    abs_url: str = ""
+    abs_api_key: str = "***"
 
 
 class SettingsUpdate(BaseModel):
@@ -234,6 +212,8 @@ class SettingsUpdate(BaseModel):
     log_retention_days: Optional[int] = None
     fuzzy_match_threshold: Optional[float] = None
     sync_ratings_to_abs_tags: Optional[bool] = None
+    abs_url: Optional[str] = None
+    abs_api_key: Optional[str] = None
 
 
 # --- Book Ratings ---

@@ -108,7 +108,7 @@ _sync_running = False
 
 
 async def _auto_test_connections(user_id: str, db: Database) -> ConnectionTestResult:
-    """Test both connections and store resolved info on the user record."""
+    """Test Hardcover connection and store resolved info on the user record."""
     user = db.get_user(user_id)
     if not user:
         return ConnectionTestResult()
@@ -131,27 +131,6 @@ async def _auto_test_connections(user_id: str, db: Database) -> ConnectionTestRe
         result.errors.append(f"Hardcover: {e}")
     finally:
         await hc.close()
-
-    # Test ABS
-    abs_client = AudiobookshelfClient(
-        base_url=user["abs_url"], api_key=user["abs_api_key"]
-    )
-    try:
-        test_info = await abs_client.test_connection()
-        result.abs_ok = True
-        result.abs_username = test_info["user"].get("username")
-        result.abs_user_id = test_info["user"].get("id")
-        result.abs_is_admin = test_info.get("is_admin", False)
-        result.abs_libraries = test_info.get("libraries", [])
-        db.update_user(user_id, {
-            "abs_user_id": test_info["user"].get("id"),
-            "abs_username": test_info["user"].get("username"),
-            "abs_is_admin": test_info.get("is_admin", False),
-        })
-    except ABSError as e:
-        result.errors.append(f"Audiobookshelf: {e}")
-    finally:
-        await abs_client.close()
 
     return result
 
@@ -177,8 +156,6 @@ async def update_user(user_id: str, data: UserUpdate, db: Database = Depends(get
     update_data = data.model_dump(exclude_none=True)
     if update_data.get("hardcover_token") == "***":
         del update_data["hardcover_token"]
-    if update_data.get("abs_api_key") == "***":
-        del update_data["abs_api_key"]
     user = db.update_user(user_id, update_data)
     return UserDB(**user).to_response()
 
@@ -410,6 +387,8 @@ async def get_settings(db: Database = Depends(get_db)):
         log_retention_days=int(raw.get("log_retention_days", "30")),
         fuzzy_match_threshold=float(raw.get("fuzzy_match_threshold", "0.85")),
         sync_ratings_to_abs_tags=raw.get("sync_ratings_to_abs_tags", "false").lower() == "true",
+        abs_url=raw.get("abs_url", ""),
+        abs_api_key="***" if raw.get("abs_api_key") else "",
     )
 
 
@@ -424,6 +403,10 @@ async def update_settings(data: SettingsUpdate, db: Database = Depends(get_db)):
         updates["fuzzy_match_threshold"] = str(data.fuzzy_match_threshold)
     if data.sync_ratings_to_abs_tags is not None:
         updates["sync_ratings_to_abs_tags"] = str(data.sync_ratings_to_abs_tags).lower()
+    if data.abs_url is not None:
+        updates["abs_url"] = data.abs_url
+    if data.abs_api_key is not None and data.abs_api_key != "***":
+        updates["abs_api_key"] = data.abs_api_key
     # sync_interval is read-only in v1 (requires container restart)
     if updates:
         db.update_settings(updates)
@@ -475,18 +458,23 @@ async def proxy_hc_lists(user_id: str, db: Database = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# Proxy: Audiobookshelf
+# Global ABS endpoints (use admin token from settings)
 # ---------------------------------------------------------------------------
 
 
-@router.get("/abs/{user_id}/libraries")
-async def proxy_abs_libraries(user_id: str, db: Database = Depends(get_db)):
-    user = db.get_user(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    abs_client = AudiobookshelfClient(
-        base_url=user["abs_url"], api_key=user["abs_api_key"]
-    )
+def _get_abs_client(db: Database) -> AudiobookshelfClient:
+    """Create an ABS client from global settings."""
+    abs_url = db.get_setting("abs_url") or ""
+    abs_api_key = db.get_setting("abs_api_key") or ""
+    if not abs_url or not abs_api_key:
+        raise HTTPException(status_code=400, detail="ABS not configured in settings")
+    return AudiobookshelfClient(base_url=abs_url, api_key=abs_api_key)
+
+
+@router.get("/abs/libraries")
+async def list_abs_libraries(db: Database = Depends(get_db)):
+    """List ABS libraries using global admin token."""
+    abs_client = _get_abs_client(db)
     try:
         libraries = await abs_client.get_libraries()
         return [{"id": lib.id, "name": lib.name, "mediaType": lib.mediaType}
@@ -497,40 +485,16 @@ async def proxy_abs_libraries(user_id: str, db: Database = Depends(get_db)):
         await abs_client.close()
 
 
-@router.get("/abs/{user_id}/collections")
-async def proxy_abs_collections(
-    user_id: str,
-    library_id: str = Query(...),
-    db: Database = Depends(get_db),
-):
-    user = db.get_user(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    abs_client = AudiobookshelfClient(
-        base_url=user["abs_url"], api_key=user["abs_api_key"]
-    )
+@router.get("/abs/users")
+async def list_abs_users(db: Database = Depends(get_db)):
+    """List ABS users using global admin token (no tokens exposed)."""
+    abs_client = _get_abs_client(db)
     try:
-        collections = await abs_client.get_collections(library_id)
-        return [{"id": c.id, "name": c.name, "libraryId": c.libraryId}
-                for c in collections]
-    except ABSError as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    finally:
-        await abs_client.close()
-
-
-@router.get("/abs/{user_id}/playlists")
-async def proxy_abs_playlists(user_id: str, db: Database = Depends(get_db)):
-    user = db.get_user(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    abs_client = AudiobookshelfClient(
-        base_url=user["abs_url"], api_key=user["abs_api_key"]
-    )
-    try:
-        playlists = await abs_client.get_playlists()
-        return [{"id": p.id, "name": p.name, "libraryId": p.libraryId}
-                for p in playlists]
+        users = await abs_client.get_users()
+        return [
+            {"id": u.get("id"), "username": u.get("username"), "type": u.get("type")}
+            for u in users
+        ]
     except ABSError as e:
         raise HTTPException(status_code=502, detail=str(e))
     finally:
@@ -613,25 +577,28 @@ async def get_stats(user_id: str, db: Database = Depends(get_db)):
     dates = db.list_reading_dates(user_id=user_id)
     rating_values = [r["rating"] for r in ratings if r.get("rating")]
 
-    # ABS stats
-    abs_client = AudiobookshelfClient(
-        base_url=user["abs_url"], api_key=user["abs_api_key"]
-    )
+    # ABS stats (use global admin token)
+    abs_url = db.get_setting("abs_url") or ""
+    abs_api_key = db.get_setting("abs_api_key") or ""
+    abs_client = AudiobookshelfClient(base_url=abs_url, api_key=abs_api_key) if abs_url and abs_api_key else None
     listening_time = 0.0
     abs_finished = 0
     abs_in_progress = 0
     hc_status_counts: dict[str, int] = {}
 
-    try:
-        me_data = await abs_client.get_me()
-        for p in me_data.get("mediaProgress", []):
-            if p.get("isFinished"):
-                abs_finished += 1
-            elif p.get("progress", 0) > 0:
-                abs_in_progress += 1
-            listening_time += p.get("currentTime", 0)
-    except ABSError:
-        pass
+    if abs_client:
+        try:
+            me_data = await abs_client.get_me()
+            for p in me_data.get("mediaProgress", []):
+                if p.get("isFinished"):
+                    abs_finished += 1
+                elif p.get("progress", 0) > 0:
+                    abs_in_progress += 1
+                listening_time += p.get("currentTime", 0)
+        except ABSError:
+            pass
+        finally:
+            await abs_client.close()
 
     # HC status counts
     hc_client = HardcoverClient(token=user["hardcover_token"])
@@ -646,7 +613,6 @@ async def get_stats(user_id: str, db: Database = Depends(get_db)):
         pass
     finally:
         await hc_client.close()
-        await abs_client.close()
 
     return StatsResponse(
         user_id=user_id,
@@ -666,9 +632,7 @@ async def get_sessions(user_id: str, db: Database = Depends(get_db)):
     user = db.get_user(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    abs_client = AudiobookshelfClient(
-        base_url=user["abs_url"], api_key=user["abs_api_key"]
-    )
+    abs_client = _get_abs_client(db)
     try:
         sessions = await abs_client.get_listening_sessions(limit=50)
         return sessions
@@ -685,32 +649,44 @@ async def get_sessions(user_id: str, db: Database = Depends(get_db)):
 
 @router.get("/export")
 async def export_config(db: Database = Depends(get_db)):
-    """Export users + rules with tokens redacted."""
+    """Export users + rules + settings with tokens redacted."""
     users = db.list_users()
     rules = db.list_sync_rules()
+    raw_settings = db.get_all_settings()
     export_users = []
     for u in users:
         export_users.append({
             "name": u["name"],
-            "abs_url": u["abs_url"],
             "hardcover_token": "REDACTED",
-            "abs_api_key": "REDACTED",
-            "abs_library_ids": u.get("abs_library_ids", []),
+            "abs_user_id": u.get("abs_user_id"),
             "enabled": u.get("enabled", True),
         })
+    export_settings = {k: v for k, v in raw_settings.items() if k != "abs_api_key"}
+    export_settings["abs_api_key"] = "REDACTED"
     return {
-        "version": "0.1.0",
+        "version": "0.2.0",
         "users": export_users,
         "rules": [SyncRuleResponse(**r).model_dump() for r in rules],
+        "settings": export_settings,
     }
 
 
 @router.post("/import")
 async def import_config(request: Request, db: Database = Depends(get_db)):
-    """Import users + rules. Tokens accepted if provided, otherwise preserved for matched users."""
+    """Import users + rules + settings. Tokens accepted if provided, otherwise preserved."""
     body = await request.json()
     imported_users = 0
     imported_rules = 0
+
+    # Import settings (if present)
+    if "settings" in body:
+        settings_updates = {}
+        for k, v in body["settings"].items():
+            if k == "abs_api_key" and v == "REDACTED":
+                continue
+            settings_updates[k] = v
+        if settings_updates:
+            db.update_settings(settings_updates)
 
     for user_data in body.get("users", []):
         # Skip if tokens are redacted and no existing user matches
@@ -725,22 +701,16 @@ async def import_config(request: Request, db: Database = Depends(get_db)):
             update = {}
             if user_data.get("hardcover_token") != "REDACTED":
                 update["hardcover_token"] = user_data["hardcover_token"]
-            if user_data.get("abs_api_key") != "REDACTED":
-                update["abs_api_key"] = user_data["abs_api_key"]
-            if user_data.get("abs_url"):
-                update["abs_url"] = user_data["abs_url"]
+            if user_data.get("abs_user_id"):
+                update["abs_user_id"] = user_data["abs_user_id"]
             if update:
                 db.update_user(matched["id"], update)
             imported_users += 1
         else:
-            if user_data.get("abs_api_key") == "REDACTED":
-                continue
             db.create_user({
                 "name": user_data["name"],
                 "hardcover_token": user_data["hardcover_token"],
-                "abs_url": user_data["abs_url"],
-                "abs_api_key": user_data["abs_api_key"],
-                "abs_library_ids": user_data.get("abs_library_ids", []),
+                "abs_user_id": user_data.get("abs_user_id"),
                 "enabled": user_data.get("enabled", True),
             })
             imported_users += 1

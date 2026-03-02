@@ -37,8 +37,7 @@ def sample_user(db):
         {
             "name": "Test User",
             "hardcover_token": "hc_test_token",
-            "abs_url": "http://abs.test.local",
-            "abs_api_key": "abs_test_key",
+            "abs_user_id": "abs_user_001",
         }
     )
 
